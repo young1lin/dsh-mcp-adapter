@@ -1,0 +1,36 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python 编译产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.python-version
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+
+# 环境与密钥（密封存储、本地 token 一律不进库）
+.env
+.env.*
+*.token
+sealed.json
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+
+# 操作系统
+Thumbs.db
+.DS_Store
