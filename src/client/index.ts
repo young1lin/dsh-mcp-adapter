@@ -21,6 +21,18 @@ import { makeSessionTab, type StartNext } from './pages/session.js'
 
 // window.__ModuleLoader__ is declared in src/globals.d.ts (repo-wide).
 
+/**
+ * The bundle's registration id — INJECTED at build time from package.json's
+ * name by scripts/build-client.mjs. The dsh client-modules contract keys the
+ * registration on the package name the loader discovered for the row
+ * ("Plugin id (package name) — the registration key; must match the graph
+ * row being executed", packages/client/modules/src/client/manifest.ts), so a
+ * hardcoded literal here breaks the browser half on every package rename.
+ * The same id also owns the injected <style> tags (claimStyles/HMR CSS
+ * attribution checks data-plugin-css against it).
+ */
+declare const CLIENT_MODULE_ID: string
+
 type T = (key: string) => string
 
 interface ClientCtx {
@@ -83,12 +95,12 @@ function makeStartNext(ctx: ClientCtx): StartNext {
 }
 
 window.__ModuleLoader__!.load({
-  id: 'dsh-mcp-json-adapter',
+  id: CLIENT_MODULE_ID,
   factory: (require: (id: string) => unknown) => {
-    if (typeof document !== 'undefined' && document.querySelector('style[data-plugin-css="dsh-mcp-json-adapter"]') === null) {
+    if (typeof document !== 'undefined' && document.querySelector(`style[data-plugin-css="${CLIENT_MODULE_ID}"]`) === null) {
       const tag = document.createElement('style')
-      tag.dataset.plugin = 'dsh-mcp-json-adapter'
-      tag.dataset.pluginCss = 'dsh-mcp-json-adapter'
+      tag.dataset.plugin = CLIENT_MODULE_ID
+      tag.dataset.pluginCss = CLIENT_MODULE_ID
       tag.textContent = css
       document.head.appendChild(tag)
     }

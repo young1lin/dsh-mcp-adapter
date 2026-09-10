@@ -1,6 +1,6 @@
 {
   "name": "@young1lin/dsh-mcp-adapter",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "description": "DeepSeek Harness plugin unifying MCP servers, SSH tunnels and connections management (mounts standard .mcp.json plus an embedded managed engine).",
   "main": "dist/index.js",
@@ -28,7 +28,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/*.test.mjs\"",
     "test:engine": "vitest run --config vitest.engine.config.ts",
-    "build:client": "esbuild src/client/index.ts --bundle --format=esm --outfile=dist/client.js --platform=browser --legal-comments=none"
+    "build:client": "node scripts/build-client.mjs"
   },
   "files": [
     "dist",

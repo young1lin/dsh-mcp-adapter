@@ -305,6 +305,9 @@ async function bundleClient() {
   const tmp = mkdtempSync(join(tmpdir(), 'dsh-client-ui-'))
   const outfile = join(tmp, 'client-bundle.mjs')
   const esbuild = await import('esbuild')
+  // Same injection as scripts/build-client.mjs: the bundle's registration id
+  // is the package name (the dsh client-modules id contract).
+  const name = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).name
   await esbuild.build({
     entryPoints: [join(here, '..', 'src', 'client', 'index.ts')],
     bundle: true,
@@ -312,6 +315,7 @@ async function bundleClient() {
     platform: 'browser',
     outfile,
     logLevel: 'silent',
+    define: { CLIENT_MODULE_ID: JSON.stringify(name) },
   })
   return { tmp, url: 'file://' + outfile.replaceAll('\\', '/') }
 }
@@ -1852,4 +1856,20 @@ test('pages (calls): an expanded call is laid out, not dumped as JSON', { skip: 
   assert.ok(shown.includes('"title": "量子位"'), 'the reply is decoded too')
   assert.ok(shown.includes('2087'), 'the facts are still there')
   assert.ok(shown.includes('2307'), 'including that the stored reply is only the head')
+})
+
+test('client bundle registers under the package name the loader discovered (id contract)', () => {
+  // The dsh client-modules contract keys the bundle registration on the
+  // package name (manifest.ts: "Plugin id (package name) — the registration
+  // key; must match the graph row being executed"). A hardcoded id broke the
+  // settings panel on the 0.3.2 rename while the host half kept working;
+  // this guard makes that drift fail CI instead of a browser banner.
+  const name = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).name
+  const bundle = readFileSync(join(here, '..', 'dist', 'client.js'), 'utf8')
+  assert.ok(bundle.includes(`id: ${JSON.stringify(name)}`), `bundle must load() under the package name ${name}`)
+  // esbuild leaves the define as a folded template interpolation; the
+  // injected string must sit inside the style-ownership selector.
+  assert.ok(bundle.includes(`style[data-plugin-css="\${${JSON.stringify(name)}}"]`), 'style ownership selector must use the same id')
+  assert.ok(bundle.split(JSON.stringify(name)).length >= 4, 'id must reach every site (load, selector, two datasets)')
+  assert.ok(!bundle.includes('dsh-mcp-json-adapter'), 'no stale pre-rename id may remain in the bundle')
 })
