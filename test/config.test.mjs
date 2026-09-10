@@ -17,8 +17,12 @@ test('defaults: no config yields process-mode with standard files', () => {
   assert.deepEqual(resolved.disable, new Set())
   assert.equal(resolved.failOnStartupError, false)
   assert.equal(resolved.watch, false)
-  assert.equal(resolved.engine, null)
+  assert.deepEqual(resolved.engine, { respawn: true, sessionTools: true }, 'the engine is ON by default')
   assert.equal(resolved.toolCallTimeoutMs, undefined)
+})
+
+test('engine: false is refused — there is no other mode to fall back to', () => {
+  assert.throws(() => validateConfig({ engine: false }), /runs only on the plugin-owned engine/)
 })
 
 test('config must be an object', () => {

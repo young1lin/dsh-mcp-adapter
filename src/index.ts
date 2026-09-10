@@ -2,9 +2,11 @@
  * DeepSeek Harness plugin that mounts MCP servers declared in the widely
  * adopted '.mcp.json' format, hosting them in a plugin-owned engine child.
  *
- * This is the MCP-ONLY build of the plugin: apply() refuses to run without
- * the 'engine' block. The legacy global-mount chain (plan/gateway/embed/
- * session bridge, the SSH tunnels and DB browsers of the merged gateway) was
+ * This is the MCP-ONLY build of the plugin: it runs exclusively on the
+ * plugin-owned engine child, which is ON by default (an `engine` block only
+ * ever overrides ports/flags; `engine: false` is refused, since there is no
+ * other mode). The legacy global-mount chain (plan/gateway/embed/session
+ * bridge, the SSH tunnels and DB browsers of the merged gateway) was
  * surgically removed on this branch — every server is hosted by the private
  * engine child and registered per session by the agent plane.
  *
@@ -59,20 +61,18 @@ export const inject: string[] = []
  */
 export async function apply(ctx: Context, config: unknown): Promise<void> {
   const resolved = validateConfig(config)
+  // Unreachable since the engine became the default (validateConfig throws on
+  // `engine: false` and builds defaults for everything else) — kept as a guard
+  // so a future config refactor cannot silently mount nothing again.
   if (resolved.engine === null) {
-    // The other machine's failure mode, made loud on purpose: a source
-    // install of this branch without `engine: true` would otherwise mount
-    // nothing and look broken in a way no log line explains.
-    throw new Error(
-      'mcp-json-adapter: this build is engine-only — add "engine: true" to the plugin config '
-      + '(the legacy global-mount chain was removed on the mcp-only branch)',
-    )
+    throw new Error('mcp-json-adapter: this build runs only on the plugin-owned engine')
   }
   // Keys the legacy chain consumed; accepted so old patch entries keep
   // loading, but nothing on this branch reads them. Say so once instead of
-  // letting them promise behavior that no longer exists.
+  // letting them promise behavior that no longer exists. (`project` is NOT
+  // listed: its per-workspace semantics are the always-on behavior here.)
   const inert = Object.keys((config ?? {}) as Record<string, unknown>)
-    .filter((key) => key !== 'engine' && key !== 'globalFile' && key !== 'toolCallTimeoutMs')
+    .filter((key) => key !== 'engine' && key !== 'project' && key !== 'globalFile' && key !== 'toolCallTimeoutMs')
   if (inert.length > 0) {
     ctx.logger.warn('mcp-json-adapter: config keys ignored by the mcp-only build: ' + inert.sort().join(', '))
   }

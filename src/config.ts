@@ -122,9 +122,16 @@ export function validateConfig(raw: unknown): ResolvedConfig {
   if (typeof doWatch !== 'boolean') {
     throw new Error('mcp-json-adapter: watch must be a boolean')
   }
+  // This build runs ONLY on the plugin-owned engine, so the engine is ON
+  // unless explicitly refused. A bare entry (or `engine: true`) gets the
+  // defaults; only `engine: false` is an error, because there is no other
+  // mode to fall back to.
   let engine: EngineEmbedConfig | null = null
-  if (cfg.engine !== undefined && cfg.engine !== false) {
-    const block = cfg.engine === true ? {} : cfg.engine
+  if (cfg.engine === false) {
+    throw new Error('mcp-json-adapter: this build runs only on the plugin-owned engine — remove "engine: false" (the engine is on unless you say otherwise)')
+  }
+  {
+    const block = cfg.engine === undefined || cfg.engine === true ? {} : cfg.engine
     if (typeof block !== 'object' || Array.isArray(block)) {
       throw new Error('mcp-json-adapter: engine config must be an object (or true)')
     }

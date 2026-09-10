@@ -21,17 +21,29 @@ DeepSeek Harness（DSH）插件，只做一件事：把 MCP 服务器挂进每�
 dsh plugin add @young1lin/dsh-mcp-adapter   # 或把 checkout 软链进 ~/.dsh/profiles/web
 ```
 
-在 profile 的 `cordis.patch.yml` 里启用插件自有引擎：
+在 profile 的 `cordis.patch.yml` 里按**包名**挂载——完整条目就这两行：
 
 ```yaml
 - id: mcp-json-adapter
   name: '@young1lin/dsh-mcp-adapter'
-  config:
-    project: session
-    engine: true        # 本分支必填（插件自有引擎子进程）
 ```
 
-到此安装结束。会话工具由宿主侧挂进每个会话自己的作用域——**不新增 preset、不改任何 preset，永远不需要**。然后打开 **设置 → MCP 与连接**（以及会话里的 **MCP** 标签页）。
+**不需要 `engine` 键**：插件自有的引擎子进程默认开启（`engine` 块只用来调参数——`httpPort` / `publicMcp` / `storageDir` / `respawn` / `startupTimeoutMs` / `sessionTools`）。会话工具由宿主侧挂进每个会话自己的作用域——**不新增 preset、不改任何 preset，永远不需要**（`engine: false` 会被拒绝：本分支没有别的模式）。
+
+然后打开 **设置 → MCP 与连接**（以及会话里的 **MCP** 标签页）。
+
+### "引擎"是个什么东西？
+
+插件自己拉起的一个私有子进程（`dist/engine/ipc-main.js`）：托管你配置的全部 MCP（proc 子进程、http 代理）、记调用日志，只通过一条 stdio 私有管道和 dsh 宿主进程说话。某个 MCP 崩了，死的是引擎、自动重生——dsh 本体永远不被拖下水。它在包里，不用单独装、不对外开端口（除非你主动发布端点）。
+
+### 源码安装（mcp-only 分支）
+
+```bash
+git clone -b mcp-only https://github.com/young1lin/dsh-mcp-adapter.git
+cd dsh-mcp-adapter && npm install && npm run build   # 必须构建；git 仓库里没有现成 dist
+```
+
+然后把 checkout 软链进 profile（`~/.dsh/profiles/web/node_modules/@young1lin/dsh-mcp-adapter` → 本仓库），patch 条目同上两行。拉了新提交后：`npm run build`，重启 dsh web。
 
 ## 作用域与生效时机
 

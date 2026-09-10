@@ -19,17 +19,29 @@ This build is **engine-only**: without `engine: true` the plugin refuses to star
 dsh plugin add @young1lin/dsh-mcp-adapter   # or link a checkout into ~/.dsh/profiles/web
 ```
 
-Enable the plugin-owned engine in your profile's `cordis.patch.yml`:
+Mount it by package name in your profile's `cordis.patch.yml` — this is the whole entry:
 
 ```yaml
 - id: mcp-json-adapter
   name: '@young1lin/dsh-mcp-adapter'
-  config:
-    project: session
-    engine: true        # required on this branch (plugin-owned child engine)
 ```
 
-That is the whole setup. Session tools mount host-side into every session's own scope — **no preset additions, no preset edits, ever**. Then open **Settings → MCP 与连接** (and the conversation **MCP** tab).
+No `engine` key needed: the plugin-owned engine child is **on by default** (an `engine` block only overrides knobs — `httpPort` / `publicMcp` / `storageDir` / `respawn` / `startupTimeoutMs` / `sessionTools`). Session tools mount host-side into every session's own scope — **no preset additions, no preset edits, ever** (and `engine: false` is refused: there is no other mode).
+
+Then open **Settings → MCP 与连接** (and the conversation **MCP** tab).
+
+### What is the "engine"?
+
+One private child process (`dist/engine/ipc-main.js`) the plugin spawns itself: it hosts every MCP you configure (proc children, http proxies), keeps the call log, and talks to the dsh host process over a stdio pipe nothing else can reach. If an MCP crashes, the engine dies and respawns — dsh itself never goes down with it. It is inside the package: nothing to install separately, no port open unless you publish one.
+
+### Source install (the mcp-only branch)
+
+```bash
+git clone -b mcp-only https://github.com/young1lin/dsh-mcp-adapter.git
+cd dsh-mcp-adapter && npm install && npm run build   # dist/ is required; git has no prebuilt one
+```
+
+Then link the checkout into the profile (`~/.dsh/profiles/web/node_modules/@young1lin/dsh-mcp-adapter` → this repo) and use the same two-line patch entry above. After pulling new commits: `npm run build`, restart dsh web.
 
 ## Scope & timing semantics
 
