@@ -168,15 +168,20 @@ export function reapOrphanedEngines(storageDir: string, ownPid: number, warn: (l
 }
 
 function commandLineMatches(pid: number, entry: string): boolean {
-  // Synchronous, best-effort: tasklist gives the image but not args; wmic is
-  // gone on modern Windows, so the precise check uses PowerShell's CIM. A
-  // failure reads as "not ours" — the safe direction (no kill).
+  // Synchronous, best-effort. Windows: tasklist gives the image but not
+  // args; wmic is gone on modern Windows, so the precise check uses
+  // PowerShell's CIM. POSIX: /proc/<pid>/cmdline is the NUL-separated argv.
+  // A failure reads as "not ours" — the safe direction (no kill).
   try {
-    const out = execFileSync("powershell.exe", [
-      "-NoProfile", "-NonInteractive", "-Command",
-      "(Get-CimInstance Win32_Process -Filter \"ProcessId=" + pid + '\").CommandLine',
-    ], { encoding: "utf8", timeout: 10000, windowsHide: true })
-    return out.includes(entry)
+    if (process.platform === "win32") {
+      const out = execFileSync("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "(Get-CimInstance Win32_Process -Filter \"ProcessId=" + pid + '\").CommandLine',
+      ], { encoding: "utf8", timeout: 10000, windowsHide: true })
+      return out.includes(entry)
+    }
+    const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8")
+    return argv.replace(/\0/g, " ").includes(entry)
   } catch {
     return false
   }
