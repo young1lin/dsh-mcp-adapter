@@ -12,17 +12,26 @@
  * module is only the wiring: the two registration barriers and the loud
  * failure surface.
  *
- * Registration barriers (TASK P3.2), in order of guarantee:
- *   1. agent/created  — scope-filtered to agents on THIS preset; starts the
- *      per-agent registration immediately (human-paced sessions are covered
- *      by the gap before their first message).
- *   2. agent/pre-step — the loop awaits this waterfall BEFORE every step's
- *      model request (agent-loop preStep:501 → step:555), so the pending
- *      registration promise is AWAITED here: machine-driven sessions
- *      (subagents, forks) get their tools in request #1 or the step fails
- *      loudly — never a silent tool-less turn. The first step therefore
- *      still waits for registration; failures are logged as errors (code +
- *      stack), never silently swallowed into a quiet success.
+ * Registration barriers (TASK P3.2, re-verified against DSH 0.1.5-alpha.2):
+ *   1. agent/created  — emitted once the fully configured agent is published
+ *      (per-session registration starts here; the factory awaits composition
+ *      setup BEFORE publish and before the first prompt assembly, but a host
+ *      plugin cannot join that setup — only a preset row can).
+ *   2. agent/pre-step — the loop still awaits this waterfall before every
+ *      step's model REQUEST, but 0.1.5 assembles the prompt — and freezes
+ *      the request's tool catalog — BEFORE dispatching it
+ *      (agent-loop/src/agent.ts: systemPrompt.assemble at :245 precedes the
+ *      waterfall at :249). The barrier therefore gates DISPATCH only: it can
+ *      no longer add tools to request #1's catalog, only delay a request
+ *      whose catalog was already fixed. Request-#1 inclusion is carried
+ *      instead by (a) registration starting at agent/created, seconds before
+ *      human-paced first messages, and (b) the prewarm cache in
+ *      ./runtime/session-runtime.ts, which makes install() microtask-fast by
+ *      removing the engine IPC round trips, so machine-driven sessions
+ *      (subagents, forks stepping immediately) win the race against assembly
+ *      in practice. A late registration still lands: every step re-assembles
+ *      from current registry layers, at the cost of a toolsChanged series
+ *      reset (agent-loop/src/agent.ts:361-368).
  *
  *      That barrier is a WATERFALL, not a notification: cordis treats a
  *      listener that does not call `next()` as a veto of the rest of the
@@ -116,6 +125,29 @@ export function mountAgentPlane(ctx: Context, options: AgentEntryConfig = {}): b
     return runtimePromise
   }
 
+  /**
+   * One-time prewarm GATE: resolve the runtime, warm the global layer, and
+   * clean up every probe row it created — BEFORE any session install runs.
+   * The ordering is not cosmetic: a session's mcp.ensure would def-hash
+   * match a prewarm probe row and start it, racing the probe's own cleanup
+   * into deleting the instance underneath the registering session (seen as
+   * a first session with zero tools). Awaiting the gate from every install
+   * removes the interleaving; it costs one bounded wait, at most once per
+   * process, and a failed prewarm still resolves the gate — sessions
+   * proceed on the uncached path.
+   */
+  const prewarmGate: Promise<void> = runtimeOf().then(async (rt) => {
+    if (rt === undefined) return
+    try {
+      const warm = await rt.prewarmGlobal()
+      ctx.logger.info('mcp-agent: prewarmed ' + String(warm.servers) + ' engine-hosted global server(s), ' + String(warm.tools) + ' tool(s) into the session install cache')
+    } catch (error) {
+      ctx.logger.warn('mcp-agent: global prewarm failed: ' + String(error instanceof Error ? error.message : error))
+    }
+  }).catch((error: unknown) => {
+    ctx.logger.warn('mcp-agent: session runtime unavailable: ' + String(error instanceof Error ? error.message : error))
+  })
+
   ctx.effect(() => ctx.on('agent/created', (payload) => {
     const agent = payload && typeof payload === 'object' ? (payload as { agent?: { id?: string; ctx?: ScopedContext; session?: { id?: string; header?: { cwd?: string } } } }).agent : undefined
     const sessionId = agent?.id ?? agent?.session?.id
@@ -124,6 +156,7 @@ export function mountAgentPlane(ctx: Context, options: AgentEntryConfig = {}): b
     if (sessionId === undefined || agentCtx === undefined || cwd === undefined || cwd.length === 0) return
     if (ready.has(sessionId)) return
     ready.set(sessionId, (async () => {
+      await prewarmGate
       const rt = await runtimeOf()
       if (rt === undefined) return
       const workspaceId = rt.workspaceIdOf({ sessionId, cwd })
@@ -146,9 +179,13 @@ export function mountAgentPlane(ctx: Context, options: AgentEntryConfig = {}): b
 
   ctx.effect(() => ctx.on('agent/pre-step', async (payload, next: WaterfallNext<unknown>) => {
     // Await the barrier, then CONTINUE the waterfall. This listener GATES the
-    // step; it does not decide it. Returning anything but next()'s value
-    // hands the agent loop that value as its step decision.
-    const id = payload && typeof payload === 'object' ? (payload as { agentId?: string; sessionId?: string }).sessionId ?? (payload as { agent?: { id?: string } }).agent?.id : undefined
+    // step's dispatch; it does not decide it. Returning anything but next()'s
+    // value hands the agent loop that value as its step decision.
+    // 0.1.5 payload: { agent, messages, turn, step, signal } — the session id
+    // is agent.id (no sessionId field); the legacy field stays as fallback.
+    const id = payload && typeof payload === 'object'
+      ? (payload as { agent?: { id?: string } }).agent?.id ?? (payload as { sessionId?: string }).sessionId
+      : undefined
     const pending = id !== undefined ? ready.get(id) : undefined
     if (pending !== undefined) await pending
     return await next()

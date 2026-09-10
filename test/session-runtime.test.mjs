@@ -44,6 +44,14 @@ function fakeSupervisor({ preExisting = [], toolsOf = () => [], supportRelease =
         const name = params.name
         if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(name)) throw new Error('mcp.ensure: invalid name')
         if (failEnsureFor.includes(name)) return { name, lifecycle: 'error', reason: 'broken generation' }
+        // The engine's core rule (ipc-service mcp.ensure): ONE instance per
+        // DEFINITION — an identical def hosted under any name answers with
+        // that name, and the caller must address the reply's name.
+        const fingerprint = JSON.stringify(params.def)
+        const twin = [...instances].find(([n, v]) => n !== name && JSON.stringify(v.def) === fingerprint)
+        if (twin !== undefined) {
+          return { name: twin[0], lifecycle: twin[1].lifecycle, state: twin[1].lifecycle, reused: true }
+        }
         const existing = instances.get(name)
         if (existing !== undefined) {
           // The engine's real behavior on ensure-over-existing: updateDef —
@@ -89,7 +97,12 @@ function fakeSupervisor({ preExisting = [], toolsOf = () => [], supportRelease =
 function fakeConfig(entries) {
   let current = entries
   return {
-    preview: async () => ({ layers: [], entries: current.map((e) => ({ ...e, def: e.def })), conflicts: [], problems: [] }),
+    // Models the real service's scope behavior: without a workspaceId only
+    // the GLOBAL layer is visible (project layers need a workspace).
+    preview: async (input = {}) => {
+      const visible = input.workspaceId === undefined ? current.filter((e) => e.level === 'global') : current
+      return { layers: [], entries: visible.map((e) => ({ ...e, def: e.def })), conflicts: [], problems: [] }
+    },
     setEntries(next) { current = next },
   }
 }
@@ -405,6 +418,178 @@ test('standard entries convert to the engine dialect before ensuring', async () 
     assert.equal(ensured.params.def.type, 'proc', 'standard command converted to the engine proc dialect (data, not executed here)')
     agent.dispose()
     await runtime.settleReleases()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- warm install cache + prewarm (DSH 0.1.5 assemble-before-pre-step) ---------------------------
+
+const globalEcho = (name, def, revision = 'r1') => ({ name, level: 'global', source: 'native', def, inherited: false, overrides: [], disabled: false, revision })
+
+test('warm cache: a second session with the same def registers with zero engine round trips', async () => {
+  const dir = scratch()
+  try {
+    const def = { type: 'echo', description: 'warm' }
+    const supervisor = fakeSupervisor({ toolsOf: () => [{ name: 'echo', inputSchema: { type: 'object' } }] })
+    const config = fakeConfig([echoEntry('demo', def)])
+    const runtime = makeRuntime(supervisor, config, dir)
+
+    const a = fakeAgentContext()
+    const first = await runtime.install(a, 'sess-w1', 'C:\ws\a')
+    const before = supervisor.calls.length
+    assert.equal(first.tools, 1)
+
+    // A DIFFERENT workspace, the SAME definition: one def, one instance —
+    // and now one cache hit, so not even engine.status is asked.
+    const b = fakeAgentContext()
+    const second = await runtime.install(b, 'sess-w2', 'C:\ws\b')
+    assert.equal(second.tools, 1)
+    assert.equal(supervisor.calls.length, before, 'cache hit: no status/ensure/tools RPC for the second session')
+
+    a.dispose()
+    b.dispose()
+    await runtime.settleReleases()
+    assert.equal(supervisor.instances.size, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('warm cache invalidates when the engine epoch changes (engine respawned)', async () => {
+  const dir = scratch()
+  try {
+    const def = { type: 'echo', description: 'epoch' }
+    const supervisor = fakeSupervisor({ toolsOf: () => [{ name: 'echo' }] })
+    const config = fakeConfig([echoEntry('demo', def)])
+    let epoch = 'pid-1'
+    const runtime = createSessionRuntime({ supervisor, config, storageDir: dir, logger: quietLogger, engineEpoch: () => epoch })
+
+    const a = fakeAgentContext()
+    await runtime.install(a, 'sess-e1', 'C:\ws\a')
+    assert.equal(supervisor.calls.filter((c) => c.method === 'mcp.ensure').length, 1)
+
+    epoch = 'pid-2' // engine child replaced: every cached instance is gone
+    // A DIFFERENT workspace on purpose: the same one would mint the same
+    // name, and instanceUsable() finding it still "live" in the fake would
+    // legitimately skip the re-ensure. A new mint must go back to the engine.
+    const b = fakeAgentContext()
+    await runtime.install(b, 'sess-e2', 'C:\ws\b')
+    assert.equal(supervisor.calls.filter((c) => c.method === 'mcp.ensure').length, 2, 'stale epoch forces a fresh resolution')
+
+    a.dispose()
+    b.dispose()
+    await runtime.settleReleases()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('warm cache drops its entry when the last lease releases the instance', async () => {
+  const dir = scratch()
+  try {
+    const def = { type: 'echo', description: 'churn' }
+    const supervisor = fakeSupervisor({ toolsOf: () => [{ name: 'echo' }] })
+    const config = fakeConfig([echoEntry('demo', def)])
+    const runtime = makeRuntime(supervisor, config, dir)
+
+    const a = fakeAgentContext()
+    await runtime.install(a, 'sess-c1', 'C:\ws\a')
+    a.dispose()
+    await runtime.settleReleases()
+    assert.equal(supervisor.instances.size, 0, 'instance left with its last owner')
+
+    // The warm entry died with the instance: the next session re-resolves
+    // instead of registering tools that address a released name.
+    const b = fakeAgentContext()
+    const summary = await runtime.install(b, 'sess-c2', 'C:\ws\a')
+    assert.equal(summary.tools, 1)
+    assert.equal(supervisor.calls.filter((c) => c.method === 'mcp.ensure').length, 2, 're-ensured after release')
+    b.dispose()
+    await runtime.settleReleases()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('prewarmGlobal binds engine-hosted global defs; installs then ride the cache', async () => {
+  const dir = scratch()
+  try {
+    const gDef = { type: 'echo', description: 'global' }
+    // The engine already hosts this def under the panel's own name — the
+    // deployment prewarm is built for (persisted store autostarts at boot).
+    const supervisor = fakeSupervisor({
+      preExisting: [{ name: 'panel-g1', def: gDef, lifecycle: 'started' }],
+      toolsOf: () => [{ name: 'echo', inputSchema: { type: 'object' } }],
+    })
+    const config = fakeConfig([
+      globalEcho('g1', gDef),
+      echoEntry('demo', { type: 'echo', description: 'project' }),
+    ])
+    const runtime = makeRuntime(supervisor, config, dir)
+
+    const warm = await runtime.prewarmGlobal()
+    assert.equal(warm.servers, 1, 'only the GLOBAL entry prewarms')
+    assert.equal(warm.tools, 1)
+    const prewarmEnsures = supervisor.calls.filter((c) => c.method === 'mcp.ensure')
+    assert.equal(prewarmEnsures.length, 1)
+    assert.equal(prewarmEnsures[0].params.start, false, 'prewarm never starts anything')
+
+    // First session of a REAL workspace: the global def is a cache hit, so
+    // the only engine work left is the project layer's own entry.
+    const agent = fakeAgentContext()
+    const summary = await runtime.install(agent, 'sess-p1', 'C:\ws\a')
+    assert.equal(summary.servers, 2)
+    const ensuresAfterInstall = supervisor.calls.filter((c) => c.method === 'mcp.ensure')
+    assert.equal(ensuresAfterInstall.length, 2, 'project entry ensured; global entry came from the cache')
+
+    agent.dispose()
+    await runtime.settleReleases()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('prewarm leaves the engine hosting exactly what it hosted: cold defs neither start nor stay', async () => {
+  const dir = scratch()
+  try {
+    // No preExisting rows: the global def is COLD. Prewarm probes with
+    // start:false, finds nothing live, and must clean up its own probe row.
+    const supervisor = fakeSupervisor({ supportRelease: true, toolsOf: () => [{ name: 'echo' }] })
+    const config = fakeConfig([globalEcho('cold', { type: 'echo', description: 'cold' })])
+    const runtime = makeRuntime(supervisor, config, dir)
+    const warm = await runtime.prewarmGlobal()
+    assert.equal(warm.servers, 0, 'a cold def is not warmable')
+    await runtime.settleReleases()
+    assert.equal(supervisor.instances.size, 0, 'the probe row was released again')
+    const coldMint = instanceNameFor('__prewarm__', 'cold', { type: 'echo', description: 'cold' })
+    assert.ok(supervisor.released.includes(coldMint), 'the released row was prewarm own probe')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('prewarm isolates a broken global entry and keeps warming the rest', async () => {
+  const dir = scratch()
+  try {
+    const goodDef = { type: 'echo', description: 'fine' }
+    const badDef = { type: 'echo', description: 'broken' }
+    // The exact name prewarm will mint for the broken entry, so the fake
+    // engine can refuse just that ensure (native entry: def passes as-is).
+    const brokenMint = instanceNameFor('__prewarm__', 'bad', badDef)
+    const supervisor = fakeSupervisor({
+      preExisting: [{ name: 'panel-good', def: goodDef, lifecycle: 'started' }],
+      toolsOf: () => [{ name: 'echo' }],
+      failEnsureFor: [brokenMint],
+    })
+    const config = fakeConfig([
+      globalEcho('bad', badDef),
+      globalEcho('good', goodDef),
+    ])
+    const runtime = makeRuntime(supervisor, config, dir)
+    const warm = await runtime.prewarmGlobal()
+    assert.equal(warm.servers, 1, 'the healthy entry warmed')
+    assert.equal(warm.tools, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

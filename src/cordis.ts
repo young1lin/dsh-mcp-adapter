@@ -49,10 +49,24 @@ export interface AgentCreatedPayload {
   }
 }
 
-/** Payload of the awaited per-step 'agent/pre-step' waterfall event. */
+/**
+ * Payload of the awaited per-step 'agent/pre-step' waterfall event.
+ *
+ * DSH 0.1.5 shape (packages/core/agent/src/runtime-types.ts:330): the loop
+ * passes `{ messages, turn, step, signal }` (agent-loop/src/agent.ts:250) and
+ * the fused agent dispatcher INJECTS `agent` into every agent-subject payload
+ * (core/agent/src/dispatch.ts:113-118), so listeners receive
+ * `{ agent, messages, turn, step, signal }` — there is NO `sessionId` field
+ * anymore; the session id lives on `agent.id`. `sessionId` below survives only
+ * as a fallback for hosts that still send the pre-0.1.5 shape.
+ */
 export interface AgentPreStepPayload {
-  sessionId?: string
   agent?: { id?: string }
+  sessionId?: string
+  messages?: unknown[]
+  turn?: number
+  step?: number
+  signal?: unknown
 }
 
 /**

@@ -58,6 +58,7 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { sharedEngine } from './engine-shared.js'
+import type { EngineSupervisor } from './engine-supervisor.js'
 import type { ConfigService } from '../config/service.js'
 import type { McpDefinition, ScopePreview } from '../config/types.js'
 import {
@@ -99,6 +100,15 @@ export interface SessionRuntimeDeps {
   toolCallTimeoutMs?: number
   /** Per-server ensure/start/tools timeout (default 60s). */
   ensureTimeoutMs?: number
+  /**
+   * Identity of the current engine child (the supervisor's epoch()). The
+   * warm install cache binds every entry to the value at fill time and
+   * treats an entry as stale the moment it changes (engine respawned: every
+   * session-scoped instance is gone). Absent = the caller vouches that the
+   * supervisor outlives its cache entries unchanged (tests' fake
+   * supervisors); warming then never invalidates.
+   */
+  engineEpoch?: () => string | undefined
   /**
    * Canonical workspace identity for one agent event. The published host
    * resolver returns the HOST workspace id; the fallback canonicalizes the
@@ -172,10 +182,19 @@ function stableStringify(value: unknown): string {
  */
 export function instanceNameFor(workspaceId: string, logical: string, def: unknown): string {
   const workspaceKey = createHash('sha256').update(workspaceId, 'utf8').digest('hex').slice(0, 10)
-  const defKey = createHash('sha256').update(stableStringify(def), 'utf8').digest('hex').slice(0, 10)
+  const defKey = defKeyOf(def)
   // The tail rule lives in shared/instance-name.ts, because the engine's call
   // log has to run it in reverse to find the logs a session minted.
   return ('s' + workspaceKey + '-' + defKey + '-' + instanceTail(logical)).slice(0, INSTANCE_NAME_MAX)
+}
+
+/**
+ * Stable hash of a definition — the SAME key the engine's mcp.ensure matches
+ * instances by (one definition, one hosted instance), so it is also the
+ * correct cache key for "which instance + which tools serve this def".
+ */
+function defKeyOf(def: unknown): string {
+  return createHash('sha256').update(stableStringify(def), 'utf8').digest('hex').slice(0, 10)
 }
 
 /** Preview-level fingerprint: name@revision pairs, order-insensitive. */
@@ -235,6 +254,13 @@ export function defaultSessionStorageDir(): string {
 export async function resolveRuntimeServices(logger: Logger, options: { toolCallTimeoutMs?: number; ensureTimeoutMs?: number } = {}): Promise<SessionRuntimeDeps | undefined> {
   const engine = sharedEngine()
   if (engine === undefined) return undefined // engine block not enabled: no per-session tools
+  // Bind the warm cache's generation to the engine child (supervisor epoch),
+  // when this build's supervisor exposes one. Defensively optional: the
+  // runtime accepts any request-shaped supervisor (tests), and without an
+  // epoch the warm cache simply never invalidates.
+  const engineEpoch = typeof (engine as EngineSupervisor).epoch === 'function'
+    ? () => (engine as EngineSupervisor).epoch()
+    : undefined
   const sharedModule = await import('./engine-shared.js') as SharedModuleLike
   const shared = typeof sharedModule.sharedRuntime === 'function' ? sharedModule.sharedRuntime() : undefined
   if (shared !== undefined && shared !== null && typeof shared.storageDir === 'string' && shared.config !== null && typeof shared.config === 'object' && typeof shared.config.preview === 'function') {
@@ -245,6 +271,7 @@ export async function resolveRuntimeServices(logger: Logger, options: { toolCall
       logger,
       toolCallTimeoutMs: options.toolCallTimeoutMs,
       ensureTimeoutMs: options.ensureTimeoutMs,
+      engineEpoch,
       workspaceIdOf: (input) => (typeof shared.workspaceIdFor === 'function' ? shared.workspaceIdFor(input.cwd, input.sessionId) : undefined) ?? fallbackWorkspaceId(input.cwd),
     }
   }
@@ -269,6 +296,7 @@ export async function resolveRuntimeServices(logger: Logger, options: { toolCall
     logger,
     toolCallTimeoutMs: options.toolCallTimeoutMs,
     ensureTimeoutMs: options.ensureTimeoutMs,
+    engineEpoch,
     workspaceIdOf: (input) => fallbackWorkspaceId(input.cwd),
   }
 }
@@ -284,6 +312,24 @@ export interface SessionRuntime {
   install(agentCtx: ScopedContext, sessionId: string, workspaceId: string): Promise<InstallSummary>
   /** Canonical workspace identity for one agent event. */
   workspaceIdOf(input: { sessionId: string; cwd: string }): string | undefined
+  /**
+   * Warm the install cache from the GLOBAL layer, ahead of any session, for
+   * definitions the engine ALREADY HOSTS. Fire-and-forget at host
+   * activation: every session's install() then registers those tools
+   * without an engine round trip, which is what keeps machine-driven
+   * sessions (subagents, forks stepping immediately after publish) from
+   * losing their first request to the assemble-vs-registration race
+   * (DSH 0.1.5 assembles the prompt BEFORE the agent/pre-step waterfall).
+   *
+   * Deliberately start-less: it only binds definitions already live (the
+   * engine autostarts its persisted store, so a deployment's global layer is
+   * typically up before the first session). A cold definition stays cold —
+   * the first session that actually installs it pays the round trip once,
+   * and every later session rides the cache that install filled. Nothing is
+   * started, and the one registry row a cold probe creates is released
+   * again, so prewarm never changes what the engine hosts.
+   */
+  prewarmGlobal(): Promise<{ servers: number; tools: number }>
   /** Await in-flight release RPCs (tests; dispose has no await slot). */
   settleReleases(): Promise<void>
 }
@@ -301,6 +347,22 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
   const releasing = new Set<Promise<void>>()
   /** mcp.release probe result: undefined = not probed yet. */
   let releaseSupported: boolean | undefined
+  /**
+   * Warm install cache: defKey -> the instance + tool schemas that def
+   * resolved to on the CURRENT engine child (see deps.engineEpoch). A hit
+   * removes the status/ensure/tools round trips from install()'s critical
+   * path, which is what lets agent-scope registration land before DSH
+   * 0.1.5's first prompt assembly. Correct across workspaces by
+   * construction: the engine hosts ONE instance per definition, so the same
+   * def always means the same instance and the same tool list — freezing
+   * them per process is exactly the per-session freeze, shared.
+   */
+  const warm = new Map<string, { epoch: string | undefined; instance: string; tools: SnapshotTool[] }>()
+  /** Whether one warm entry still belongs to the running engine child. */
+  function warmValid(entry: { epoch: string | undefined }): boolean {
+    if (deps.engineEpoch === undefined) return true
+    return deps.engineEpoch() === entry.epoch
+  }
 
   function warn(line: string): void {
     deps.logger.warn('mcp-agent: ' + line)
@@ -379,9 +441,31 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     return tools
   }
 
+  /**
+   * Resolve one definition to its hosting instance plus tool schemas, through
+   * the warm cache when it already knows this def on the CURRENT engine
+   * child. Cache aside, this is exactly the old ensureInstance + listTools
+   * pair; the minted name is only what the caller would open — the engine's
+   * def-hash matching may answer with an instance somebody else already has
+   * up, and that answer is what gets leased, addressed, and frozen.
+   */
+  async function resolveServer(
+    def: McpDefinition,
+    logical: string,
+    minted: string,
+  ): Promise<{ instance: string; tools: SnapshotTool[] } | undefined> {
+    const key = defKeyOf(def)
+    const hit = warm.get(key)
+    if (hit !== undefined && warmValid(hit)) return { instance: hit.instance, tools: hit.tools }
+    const instance = await ensureInstance({ instance: minted, def, logical })
+    if (instance === undefined) return undefined
+    const tools = await listTools(instance, logical)
+    warm.set(key, { epoch: deps.engineEpoch?.(), instance, tools })
+    return { instance, tools }
+  }
+
   /** One engine call with the host-side content budget (P3.8), addressed by instance. */
-  async function callEngine(instance: string, tool: string, args: unknown, exec: unknown): Promise<unknown> {
-    const signal = exec !== null && typeof exec === 'object' && (exec as { signal?: unknown }).signal !== undefined
+  async function callEngine(instance: string, tool: string, args: unknown, exec: unknown): Promise<unknown> {    const signal = exec !== null && typeof exec === 'object' && (exec as { signal?: unknown }).signal !== undefined
       ? (exec as { signal?: unknown }).signal
       : undefined
     const result = await deps.supervisor.request('mcp.call', {
@@ -466,6 +550,12 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     lease.refs.delete(sessionId)
     if (lease.refs.size > 0) return // other sessions still hold this generation
     leases.delete(instance)
+    // The instance is about to leave the engine, so its warm entry stops
+    // being true: a later install of the same def must re-resolve (and
+    // re-ensure) rather than register tools that address a dead name.
+    for (const [key, entry] of warm) {
+      if (entry.instance === instance) warm.delete(key)
+    }
     void releaseOnEngine(instance)
   }
 
@@ -560,14 +650,16 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
       }
       // The minted name is what this session would OPEN; the engine answers
       // with what it actually hosts for this definition, which may be an
-      // instance another session (or the settings panel) already has up.
+      // instance another session (or the settings panel) already has up —
+      // and if the warm cache already resolved this def on this engine
+      // child, no round trip happens at all (see resolveServer).
       const minted = instanceNameFor(workspaceId, entry.name, def)
-      const instance = await ensureInstance({ instance: minted, def, logical: entry.name })
-      if (instance === undefined) {
+      const resolved = await resolveServer(def, entry.name, minted)
+      if (resolved === undefined) {
         unavailable.push(entry.name)
         continue
       }
-      const tools = await listTools(instance, entry.name)
+      const { instance, tools } = resolved
       instances.push(instance)
       acquire(instance, sessionId)
       servers.push({ logical: entry.name, instance, def, tools })
@@ -613,6 +705,68 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     },
     workspaceIdOf(input) {
       return deps.workspaceIdOf !== undefined ? deps.workspaceIdOf(input) : canonicalWorkspaceId(input.cwd)
+    },
+    async prewarmGlobal() {
+      // Global-only view: preview without a workspaceId skips every project
+      // layer (session layers need a session). Standard entries convert to
+      // the engine dialect exactly as installFresh does — same defs, same
+      // cache keys, so a prewarmed entry is a HIT for the first session.
+      const preview = await deps.config.preview({ maskSecrets: false })
+      const active = preview.entries.filter((entry) => !entry.disabled).slice(0, MAX_SERVERS_PER_SNAPSHOT)
+      let servers = 0
+      let tools = 0
+      for (const entry of active) {
+        let def = entry.def
+        if (entry.source === 'standard') {
+          const converted = standardToNative(entry.def)
+          if (converted === undefined) continue
+          def = converted as McpDefinition
+        }
+        try {
+          const key = defKeyOf(def)
+          const hit = warm.get(key)
+          if (hit !== undefined && warmValid(hit)) {
+            servers += 1
+            tools += hit.tools.length
+            continue
+          }
+          // The minted name is a placeholder nobody leases: the engine's
+          // def-hash matching answers with the instance already hosting this
+          // definition (often the panel's own live one), and that answer —
+          // not the placeholder — is what the cache binds and sessions lease.
+          const minted = instanceNameFor('__prewarm__', entry.name, def)
+          const reply = await deps.supervisor.request('mcp.ensure', { name: minted, def, start: false }, { timeoutMs: ensureTimeoutMs }) as {
+            name?: unknown
+            lifecycle?: unknown
+            reused?: boolean
+          }
+          const instance = typeof reply.name === 'string' && reply.name !== '' ? reply.name : minted
+          // Only a LIVE twin is warmable: a stopped/error row answers
+          // tools/list with nothing (or spawns a lazy proc, which prewarm
+          // must not do). 'idle' is a lazy proc's resting state — list would
+          // SPAWN it — so 'started' only.
+          if (reply.lifecycle !== 'started' || instance === minted) {
+            // A row this probe itself created goes away again: prewarm must
+            // leave the engine hosting exactly what it hosted before. A twin
+            // somebody else owns (instance !== minted) is never touched. The
+            // cleanup is AWAITED — prewarmGlobal resolves only once the
+            // engine is back to where it started, which is what lets every
+            // session install safely run behind it.
+            if (instance === minted && reply.reused !== true) await releaseOnEngine(minted)
+            continue
+          }
+          const listed = await listTools(instance, entry.name)
+          warm.set(key, { epoch: deps.engineEpoch?.(), instance, tools: listed })
+          servers += 1
+          tools += listed.length
+        } catch (error) {
+          // Per-entry isolation: a broken global server must not block the
+          // rest, and must not fail activation (a session retries the def
+          // through the uncached path when it actually installs).
+          warn('prewarm of ' + entry.name + ' failed: ' + String(error instanceof Error ? error.message : error))
+        }
+      }
+      return { servers, tools }
     },
     async settleReleases() {
       await Promise.all([...releasing])

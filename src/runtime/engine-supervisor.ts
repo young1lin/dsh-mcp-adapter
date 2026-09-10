@@ -71,6 +71,14 @@ export interface EngineSupervisor {
   httpOrigin(): string | undefined
   /** Whether the child is currently alive. */
   alive(): boolean
+  /**
+   * Identity of the CURRENT engine child (its pid; undefined while dead or
+   * before the first ready frame). Changes across every respawn, so callers
+   * can bind caches to a generation and drop them when the engine restarts.
+   * Theoretically the OS can recycle a pid; the failure that leaves is one
+   * stale cache window, no worse than the pre-epoch behavior.
+   */
+  epoch(): string | undefined
   /** Graceful stop; kills as the floor. Never throws. */
   dispose(): Promise<void>
   resume(): Promise<IpcReady>
@@ -404,6 +412,9 @@ export function createEngineSupervisor(options: SupervisorOptions, sinks: Superv
       return ready !== undefined && (ready.httpPort ?? 0) > 0 ? "http://127.0.0.1:" + String(ready.httpPort) : undefined
     },
     alive: () => child !== null,
+    epoch(): string | undefined {
+      return ready === undefined ? undefined : String(ready.pid)
+    },
     dispose,
   }
 }

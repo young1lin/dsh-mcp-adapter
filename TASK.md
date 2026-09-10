@@ -417,13 +417,13 @@ Settings → MCP 与连接
 
 ## 11. 当前进度与下一模型交接
 
-- 当前阶段 / 正在执行任务 ID：P0-P7 代码全部完成（P7.7/7.8/7.9 实机/CI 项注明）；唯余 P8 实机验收——等待用户授权重启 dsh web（提问已发出，超时未答，已在对话中重述）
-- 本轮完成与证据：P0 全部 + P1 全部勾选。P1 实体：src/engine/（100 文件，engine-main.ts 显式生命周期、ipc-main.ts/ipc-service.ts、index.ts 薄壳）、src/shared/ipc-protocol.ts、src/runtime/engine-supervisor.ts、src/index.ts 接入 engine 配置块；测试：宿主 node:test 57/57（新增 engine-ipc 4 + engine-orphan 1）、引擎 vitest 807/807；pack-check 干净安装 e2e 通过（echo 往返+与旧网关 19999 共存）
-- 改动文件：TASK.md、docs/4 篇、src/engine 全树（迁入+新增 engine-main/ipc-main/ipc-service）、src/shared/ipc-protocol.ts、src/runtime/engine-supervisor.ts、src/index.ts、src/config.ts、test/engine 全树（54 test+setup+fixtures）、test/engine-ipc.test.mjs、test/engine-orphan.test.mjs、scripts/copy-engine-assets.mjs、scripts/pack-check.mjs、scripts/pack-check-driver.mjs、package.json、tsconfig.json、vitest.engine.config.ts、gateway.config.example.json、.agents/skills
-- 测试命令、结果与未运行项：typecheck 过、build 过（含资产拷贝）、npm test 57/57、npm run test:engine 807/807（2 skip）、node scripts/pack-check.mjs 退出 0；未运行项：GUI 内实机验证（P8）
-- 仍运行的后台任务及是否需要收集/停止：子代理 1b0f27d8 已改派审阅契约文档（返回审阅意见，不写文件）；其余子代理已结束；无 shell 后台作业
-- 当前 GUI 使用的版本、是否已 rebuild/refresh/restart：GUI=全局 DSH 0.1.1-rc.2 PID <pid>（127.0.0.1:3080），加载旧 adapter（经 profiles/web link）；本轮未 rebuild/未重启（无需）
-- 风险/阻碍及下一步：运行中 19999 引擎（PID <pid>）仍承载本会话正在使用的 MCP 工具——新引擎切换需用户授权重启 dsh web，此前新旧通路并存但不同时激活（旧默认 gateway 配置未动，新 engine 块默认关闭）；新引擎的 IPC 方法域（config/session/tunnel/observability）随 P2-P4 扩充；下一步 P2.1 标准文件 repository
+- 当前阶段 / 正在执行任务 ID：P0-P7 完成后进入维护期；本轮=DSH 0.1.5-alpha.2 不兼容更新适配（非 TASK 阶段：契约修订 + 注入时序加固）
+- 本轮完成与证据：实测确认 0.1.5-alpha.2 上全链路注入存活（2026-09-10 17:05 rustdesk 会话的 ptc 生成 SDK 内 12 处 mcp__ 工具声明）；修复两处漂移——① agent/pre-step 载荷去 sessionId 字段（agent.ts 读取反转为 agent.id 优先；cordis.ts 类型对齐 core/agent/src/runtime-types.ts:330）② 0.1.5 的 systemPrompt.assemble 先于 pre-step waterfall（agent-loop/src/agent.ts:245/249），请求 #1 工具目录失去屏障保证 → 新增 prewarm 门闩：挂载时以 start:false 探测引擎已托管的全局层 def，def-hash 键缓存 + supervisor epoch 世代绑定 + 释放侧失效 + 探测行自清理，install() 热 def 零 IPC 往返；docs/dsh-integration-contract.md 全文重写为 0.1.5-alpha.2 实测版
+- 改动文件：src/agent.ts、src/cordis.ts、src/runtime/session-runtime.ts、src/runtime/engine-supervisor.ts、test/session-runtime.test.mjs（fake 引擎补 def-twin 匹配 + 6 条新用例）、docs/dsh-integration-contract.md、TASK.md
+- 测试命令、结果与未运行项：typecheck 过；build 过；npm test 167/167；test:engine 未跑（src/engine 零改动）
+- 仍运行的后台任务及是否需要收集/停止：无（三个源码仓探查子代理的报告于收工后送达：loader/preset/mcp-client 三面均确认零破坏性变更、无原生 .mcp.json、preset 源码 0.1.3→0.1.5 零 diff；增量事实已补录契约 §2/§3/§4/§5.5/§9/§12——含用户 patch 层热重载、conversation.view owner 份额更换、'code' preset 不存在、discovery 预解析 preset 行）
+- 当前 GUI 使用的版本、是否已 rebuild/refresh/restart：GUI=全局 DSH 0.1.5-alpha.2（PID 52120，127.0.0.1:3080，源码仓 HEAD 同版本）；adapter 已 rebuild（dist 2026-09-10）但 **dsh web 未重启——宿主半改动需重启生效**
+- 风险/阻碍及下一步：冷 def 的首个机器驱动会话仍可能首请求无工具（prewarm 只热引擎已托管的 def；工具下一步补上，代价一次 KV 序列重置，契约 §12.1 已记录）；要"请求 #1 绝对保证"需 preset 行路线（契约 §12.6）；下一步=用户重启 dsh web 后看 prewarm 日志行，并实测子代理会话首请求工具面
 
 后续交接用下列结构替换以上状态，保持真实最新：
 
@@ -536,3 +536,15 @@ UI 实际操作、URL、截图/记录位置：
 本次已勾选项：
 未完成项及原因：
 ```
+
+### 2026-09-10 DSH 0.1.5-alpha.2 适配（维护轮，非 TASK 阶段）
+
+日期与执行者：2026-09-10，Claude（主线会话）
+变更内容与原因：dsh 全局安装更新至 0.1.5-alpha.2（0:17），实测注入全链路存活；两处契约漂移修复——agent/pre-step 载荷（sessionId 字段移除，agent.id 为主读）与 assemble-先于-waterfall（请求 #1 工具目录屏障失效）→ prewarm 门闩 + def-hash 热缓存 + supervisor epoch；docs/dsh-integration-contract.md 重写为 0.1.5-alpha.2 实测版
+执行命令与退出码：npm run typecheck（0）、npm run build（0）、npm test（167/167，0）；test:engine 未跑（src/engine 零改动）
+自动测试结果：session-runtime 新增 6 用例全绿（warm-cache 零往返 / epoch 失效 / 租约释放失效 / prewarm 三态）；fake 引擎补 def-twin 匹配（对齐 engine ipc-service.ts:113-114）
+UI 实际操作、URL、截图/记录位置：live 验证 curl 3080 /dsh-mcp-manager/{engine,workspaces}；会话证据 ~/.dsh/sessions/--C-PythonProject-dev-rustdesk--/session-ebb4c58f（system SDK 含 12 处 mcp__）
+功能矩阵对应项：docs/unified-feature-matrix.md 会话工具注入项（不变）
+内存/进程/故障验证：Win32_Process 实测 dsh PID 52120（17:05 起）+ 引擎子进程 PID 58452；prewarm start:false 不新增常驻进程
+本次已勾选项：无 TASK 勾选变化（维护轮）
+未完成项及原因：dsh web 未重启（用户动作）——重启后 prewarm 日志行与子代理首请求工具面待实测；冷 def 首机器会话竞态记录于契约 §12.1
