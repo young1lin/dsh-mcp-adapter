@@ -4,7 +4,7 @@
 
 ## 项目是什么
 
-`dsh-mcp-adapter` 是一个 DSH（DeepSeek Harness）双面插件，把两件原本分开的东西合成了一个：
+本仓（GitHub 名 `dsh-mcp-adapter`）发布为 npm 包 **`dsh-mcp-json-adapter`**——一个 DSH（DeepSeek Harness）双面插件，把两件原本分开的东西合成了一个：
 
 1. **MCP 配置与挂载** —— 读 `.mcp.json`（Claude Code 那套格式）与自有的原生条目，按 global / project / session 三层合并，把每个会话该有的工具注册进**那个会话自己的 scope**。
 2. **MCP 运行时** —— 原 `local-mcp-gateway` 整体并入，成为一个受管的**引擎子进程**：托管 proc / http / rest / mysql / redis / pg / mongo 各类 MCP，带调用日志、流量环、SSH 隧道、Web 管理面板。
@@ -98,7 +98,7 @@ DSH 宿主进程 (dsh web, :3080)
 ## 活体验证
 
 - 用户自己的 dsh 跑在 **3080**，管理桥在 `http://127.0.0.1:3080/dsh-mcp-manager/...`，可以直接 curl 验证真实状态（比读代码可靠）。
-- 开发安装是软链：`~/.dsh/profiles/web/node_modules/dsh-mcp-json-adapter` → 本仓库。注意 **profile 里的包名是 `dsh-mcp-json-adapter`**，与 `package.json` 的 `name`（`dsh-mcp-adapter`）不同。
+- 开发安装是软链：`~/.dsh/profiles/web/node_modules/dsh-mcp-json-adapter` → 本仓库。npm 包名就是 `dsh-mcp-json-adapter`（`dsh-mcp-adapter` 这个无 scope 名在 npm 上是别人的，2026-09-10 实测 403；仓库名/目录名与包名不同无妨）。
 - **宿主半区或 `dist/client.js` 改了都要重启 dsh 才生效**（宿主缓存 client bundle）。重启是用户的动作，改完要明说。
 - 量内存不要猜：`Get-CimInstance Win32_Process` 走真实进程树。引擎自身约 55–90 MB，大头一向是**被托管的 MCP 子进程**，那些是第三方 Node 程序，换什么语言监管它们都不会变小。
 

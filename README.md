@@ -1,4 +1,4 @@
-# dsh-mcp-adapter
+# dsh-mcp-json-adapter
 
 **MCP 与连接** — a single DeepSeek Harness (DSH) plugin unifying MCP server management, SSH tunnels/port mappings, and the embedded management engine. Absorbs local-mcp-gateway (MIT) as a plugin-owned child process; no separate gateway install, no :19999 panel to open.
 
@@ -15,7 +15,7 @@
 ## Install
 
 ```bash
-npm install -g dsh-mcp-adapter   # or link a checkout into ~/.dsh/profiles/web
+npm install -g dsh-mcp-json-adapter   # or link a checkout into ~/.dsh/profiles/web
 ```
 
 Enable the plugin-owned engine in your profile's `cordis.patch.yml`:
