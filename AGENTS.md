@@ -4,27 +4,31 @@
 
 ## 项目是什么
 
-本仓（GitHub 名 `dsh-mcp-adapter`）发布为 npm 包 **`@young1lin/dsh-mcp-adapter`**——一个 DSH（DeepSeek Harness）双面插件，把两件原本分开的东西合成了一个：
+本仓（GitHub 名 `dsh-mcp-adapter`）发布为 npm 包 **`@young1lin/dsh-mcp-adapter`**。这是 **mcp-only 分支**：一个 DSH（DeepSeek Harness）双面插件，把两件原本分开的东西合成了一个——
 
 1. **MCP 配置与挂载** —— 读 `.mcp.json`（Claude Code 那套格式）与自有的原生条目，按 global / project / session 三层合并，把每个会话该有的工具注册进**那个会话自己的 scope**。
-2. **MCP 运行时** —— 原 `local-mcp-gateway` 整体并入，成为一个受管的**引擎子进程**：托管 proc / http / rest / mysql / redis / pg / mongo 各类 MCP，带调用日志、流量环、SSH 隧道、Web 管理面板。
+2. **MCP 运行时** —— 原 `local-mcp-gateway` 并入后的**引擎子进程**：托管 proc / http / echo 各类 MCP，带调用日志与命名的 bearer 令牌。
 
-GUI 里叫「MCP 与连接」，挂在 `settings.section` 槽。功能清单与 HTTP API 对照见 `docs/unified-feature-matrix.md`，宿主契约见 `docs/dsh-integration-contract.md`。
+`main` 分支还带着 SSH 隧道、数据库浏览器（mysql/redis/pg/mongo/rest 适配器）、流量环、备份/迁移与独立 `lmg` 网关形态；本分支把它们全部切除了，**只支持引擎模式**（配置无 `engine` 块时 `apply()` 直接报错）。
+
+GUI 里叫「MCP 与连接」，挂在 `settings.section` 槽。宿主契约见 `docs/dsh-integration-contract.md`。
 
 ## 常用命令
 
 ```sh
 npm run typecheck      # tsc --noEmit，提交前必过
-npm run build          # tsc + 拷引擎静态资源 + esbuild 打 client.js
+npm run build          # tsc + esbuild 打 client.js
 npm run build:client   # 只重打浏览器半区
 
-npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，159 个
-npm run test:engine    # vitest run --config vitest.engine.config.ts —— 引擎，817 个
+npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，124 个
+npm run test:engine    # vitest run --config vitest.engine.config.ts —— 引擎，279 个
 ```
 
 两套测试框架**不是历史包袱，是边界**：`test/*.test.mjs` 用 node 内置 runner 跑宿主与浏览器半区（含一个手写的迷你 React），`test/engine/*.test.ts` 用 vitest 跑并入的引擎（沿用 gateway 原有的 supertest 用例）。新增测试放进对应那一侧，别混。
 
 `npx tsc --noEmit` 只覆盖 `src`（tsconfig 的 `include` 就是 `src`）。改了 `test/**/*.ts` 想单独查类型，要显式点名并加 `--ignoreConfig`。
+
+**构建前先清 `dist/`**：tsc 不删旧产物，删掉过的模块会以旧 `.js` 残留，动态 `import()` 在类型检查里也可能静默放过（`dist/session.js` 那次就是这样混过去的）。
 
 ## 架构
 
@@ -39,14 +43,14 @@ DSH 宿主进程 (dsh web, :3080)
 │   ├─ listener.ts     对外 MCP 端点开关与端口
 │   └─ engine-supervisor.ts   引擎子进程的所有权、重生退避、孤儿回收
 │
-├─ 浏览器半区 src/client/  （esbuild 打成 dist/client.js，由宿主 client-module 扫描）
+├─ 浏览器半区 src/client/  （esbuild 打成 dist/client.js，id 注入自 package.json）
 │
 └─ 引擎子进程  node dist/engine/ipc-main.js
-    └─ src/engine/  registry / router / adapters / calls / traffic / tunnels / admin
+    └─ src/engine/  registry / router / adapters(proc|http|echo) / calls / tokens
 ```
 
-- 宿主与引擎之间是**行分隔 JSON over stdio 的私有管道**（协议在 `src/shared/ipc-protocol.ts`，方法表由 `engine/ipc-service.ts` 与 `engine/ipc-admin.ts` 合成，共 51 个：mcp 21 / tunnels 14 / tokens 5 / engine 4 / traffic 3 / data 2 / env 2）。这条管道**永远不暴露给浏览器**，浏览器只能走 `/dsh-mcp-manager`；引擎也只认自己父进程的这对 fd。
-- 引擎**已经是独立进程**了，不在 DSH 进程里。合并进来的独立守护模式代码（`src/engine/{bin,cli,daemon}.ts`，pid 文件 + loopback HTTP + start/stop/status）也还在，但 `package.json` **没有声明 `bin`**，所以当前没有以 `lmg` 之类的命令对外暴露。
+- 宿主与引擎之间是**行分隔 JSON over stdio 的私有管道**（协议在 `src/shared/ipc-protocol.ts`，方法表由 `engine/ipc-service.ts` 与 `engine/ipc-admin.ts` 合成，共 30 个：mcp 21 / tokens 5 / engine 4）。这条管道**永远不暴露给浏览器**，浏览器只能走 `/dsh-mcp-manager`；引擎也只认自己父进程的这对 fd。
+- 引擎的 HTTP 监听只服务两样东西：MCP 端点（`POST /<name>`，bearer 门禁）与 `/health` 探针。没有管理面板、没有 `/api`——一切管理都走私有 IPC。
 
 ### 谁是大脑
 
@@ -54,34 +58,36 @@ DSH 宿主进程 (dsh web, :3080)
 
 - 三层配置合并、workspace / session 语义、密钥掩码往返，全在宿主的 `src/config/`；
 - 宿主把**算好的 resolved def** 通过 `mcp.ensure` 交给引擎，引擎按定义托管进程、路由调用、记日志；
-- 所以引擎对 DSH 的 workspace / session 概念**一无所知**，这正是它能同时以独立网关形态存在的原因。
+- 所以引擎对 DSH 的 workspace / session 概念**一无所知**。
 
-引擎自己那套 `gateway.config.json` + `managed.json` 是独立模式用的另一套账本，DSH 模式下不参与配置决策。
+引擎自己那套 `gateway.config.json` + `managed.json` 是遗留账本（`managed.json` 仍承载开关/令牌状态），DSH 模式下不参与配置决策。
 
 ### 配置分层（`src/config/`）
 
 | 文件 | 职责 |
 | --- | --- |
 | `standard-repo.ts` | `.mcp.json` 方言（command/args/env/url/headers/disabled，未知字段原样保留） |
-| `native-catalog.ts` | 引擎方言 `ServerDef`（type: mysql/redis/pg/mongo/proc/http/rest/echo），加密存储 |
+| `native-catalog.ts` | 引擎方言 `ServerDef`（type: proc/http/echo/第三方 adapter），加密存储 |
 | `session-store.ts` | 单会话覆盖 |
 | `merge.ts` | **唯一**的合并算法：session > project > global |
 | `service.ts` | 面向浏览器的唯一门面：按 scope id 取路径（浏览器永远不传路径）、拒绝符号链接逃逸、出站掩码、`expectedRevision` 乐观并发 |
 
 合并规则要点：**整条替换，绝不跨源拼字段**；被标记 disabled 的提及是**墓碑**，会遮蔽所有更低层的同名条目；同一 scope 内 standard 与 native 同名是**冲突**，该名字直接排除并上报，不做静默选择。
 
+注意：native 层的 proc 定义里 **`command` 是完整命令行**（standardToNative 会把 `.mcp.json` 的 command+args 拼进去，`tokenizeCommand` 再拆开）——给它传 `args` 字段会被静默忽略，表现为子进程起了却永远握手超时。
+
 ### 目录地图
 
 | 目录 | 内容 |
 | --- | --- |
-| `src/host/` | 插件激活、管理桥、端点决策、备份 |
-| `src/runtime/` | 引擎监管、会话运行时（逻辑名 ↔ 实例名、租约） |
+| `src/host/` | 插件激活、管理桥、端点决策 |
+| `src/runtime/` | 引擎监管、会话运行时（逻辑名 ↔ 实例名、租约、预热缓存） |
 | `src/config/` | 三层配置模型与门面 |
-| `src/client/` | 面板（`pages/` 下 mcp / tunnels / traffic / data / session / advanced / entry-editor） |
-| `src/engine/` | 并入的网关本体（约 16.5k 行，其中 `admin/` 是它自带的原生 ES modules 面板） |
-| `src/engine/adapters/` | 各类 MCP 适配器 + `proxy.ts`（远端代理层，工具/资源开关在这里生效） |
+| `src/client/` | 面板（`pages/` 下 mcp / session / advanced / entry-editor） |
+| `src/engine/` | 并入的引擎核心（registry / router / adapters / calls / tokens） |
+| `src/engine/adapters/` | proc / http / echo 适配器 + `proxy.ts`（远端代理层，工具/资源开关在这里生效） |
 | `src/shared/` | 两侧共用：IPC 协议、实例命名、视图顺序 |
-| `docs/` | 契约与迁移矩阵；`TASK.md` 是分阶段实施计划 |
+| `docs/` | 宿主契约；`TASK.md` 是分阶段实施计划 |
 
 ## 硬性约束
 
@@ -98,15 +104,15 @@ DSH 宿主进程 (dsh web, :3080)
 ## 活体验证
 
 - 用户自己的 dsh 跑在 **3080**，管理桥在 `http://127.0.0.1:3080/dsh-mcp-manager/...`，可以直接 curl 验证真实状态（比读代码可靠）。
-- 开发安装是软链：`~/.dsh/profiles/web/node_modules/dsh-mcp-json-adapter` → 本仓库（本机沿用这个链接名，patch 条目 `name: 'dsh-mcp-json-adapter'` 靠它解析，不用动）。npm 正式包名是 **`@young1lin/dsh-mcp-adapter`**；无 scope 名 `dsh-mcp-adapter` 在 npm 上是别人的（2026-09-10 实测 403），曾短暂发布过的 `dsh-mcp-json-adapter` 已废弃指向正式名。
+- 开发安装是软链：`~/.dsh/profiles/web/node_modules/@young1lin/dsh-mcp-adapter` → 本仓库。npm 正式包名是 **`@young1lin/dsh-mcp-adapter`**；无 scope 名 `dsh-mcp-adapter` 在 npm 上是别人的（2026-09-10 实测 403），曾短暂发布过的 `dsh-mcp-json-adapter` 已废弃指向正式名。
 - **宿主半区或 `dist/client.js` 改了都要重启 dsh 才生效**（宿主缓存 client bundle）。重启是用户的动作，改完要明说。
 - 量内存不要猜：`Get-CimInstance Win32_Process` 走真实进程树。引擎自身约 55–90 MB，大头一向是**被托管的 MCP 子进程**，那些是第三方 Node 程序，换什么语言监管它们都不会变小。
 
 ## 常见坑
 
 - **Bash 工具会吃掉反斜杠**，即使在带引号的 heredoc 里。含 `\n`、`\/`、正则的补丁脚本要用 Write 工具落盘再执行，或者用 `chr(92)` 拼。
-- **仓库行尾是混的。** `src/engine/**` 大多是 CRLF，其余多为 LF，且 `core.autocrlf=false`、没有 `.gitattributes`。用 Python 文本模式读写会把整个文件转成 LF，一个 30 行的改动会显示成 600 行。写回时保留原行尾。
-- **迷你 React 测试夹具有限制**（`test/client-ui.test.mjs`）：`useEffect` 每个组件实例只跑一次且忽略依赖，`useCallback` 也忽略依赖。所以某个标签页要用的数据，必须搭 `/status` 的返回一起给。
-- **测试里不要自己算端口。** 用 `freePort()` 问操作系统（`daemon.test.ts` / `tunnel-api.test.ts` 都有现成写法）。曾经用 `34000 + Date.now() % 1500` 算端口，模会重复，两个测试撞同一个端口后守护进程互相顶掉、活着的那个泄漏并占住端口，表现为"每次挂的用例都不一样、单跑全过"。
+- **仓库行尾是混的。** `src/engine/**` 大多是 CRLF，其余多为 LF，且 `core.autocrlf=false`、没有 `.gitattributes`。用 Python 文本模式读写会把整个文件转成 LF，一个 30 行的改动会显示成 600 行。写回时保留原行尾（`newline=''` + 二进制敏感替换，或 Edit 工具）。
+- **迷你 React 测试夹具有限制**（`test/client-ui.test.mjs`）：`useEffect` 每个组件实例只跑一次且忽略依赖，`useCallback` 也忽略依赖。所以某个标签页要用的数据，必须搭 stub fetch 的返回一起给。
+- **测试里不要自己算端口。** 用 `freePort()` 问操作系统。曾经用 `34000 + Date.now() % 1500` 算端口，模会重复，两个测试撞同一个端口后守护进程互相顶掉、活着的那个泄漏并占住端口，表现为"每次挂的用例都不一样、单跑全过"。
 - **临时目录由 `test/engine/setup.ts` 统一沙箱化**：它建一个 per-file 沙箱并把 `TMPDIR/TMP/TEMP` 重定向进去，`afterAll` 加 `process.on("exit")` 双重清理。测试里照常 `mkdtempSync(join(tmpdir(), ...))` 即可，不要绕开它自己找系统临时目录 —— 绕开就会重现那次 5,703 个残留目录。
 - **清理失败要出声。** 那 5,703 个目录之所以堆到没人发现，就是因为清理逻辑里有个静默的 `catch`。

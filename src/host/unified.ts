@@ -125,7 +125,6 @@ export async function startUnifiedHost(
       const web = service(webCtx, 'webServer') as WebServerFace | undefined
       if (web === undefined) return
       const dispose = mountBridge(web, { config, engine: () => disposed ? undefined : engine, storageDir,
-        globalFile: resolved.globalFile,
         listenerConfig: () => resolved.engine ?? undefined,
         listenerActual: () => listener,
         workspaces: () => workspaces().map(({ id, path, title }) => ({ id, path, title })),

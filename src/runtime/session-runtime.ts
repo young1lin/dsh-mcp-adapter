@@ -72,8 +72,89 @@ import {
 } from '../config/session-store.js'
 import { standardToNative } from '../config/transfer.js'
 import { INSTANCE_NAME_MAX, instanceTail } from '../shared/instance-name.js'
-import { createOutputLite, publicNameLite } from '../session.js'
 import type { Logger, ScopedContext } from '../cordis.js'
+
+// --- mcp-client-shaped helpers (moved here from the retired legacy session
+// bridge; the runtime is their only remaining consumer) -----------------------
+
+/**
+ * Model-facing public tool name, mirroring mcp-client's publicToolName:
+ * 'mcp__<server>__<raw>' normalized to [A-Za-z0-9_-], with a 12-hex sha256
+ * identity suffix appended when normalization is lossy or the name is long.
+ * @param serverName - the server namespace.
+ * @param rawName - the MCP server's own tool name.
+ * @returns the scoped model-facing tool name.
+ */
+export function publicNameLite(serverName: string, rawName: string): string {
+  const joined = 'mcp__' + serverName + '__' + rawName
+  const normalized = joined.replace(/[^A-Za-z0-9_-]/g, '_')
+  if (normalized === joined && normalized.length <= 64) return normalized
+  const hash = createHash('sha256').update(serverName + '\0' + rawName).digest('hex').slice(0, 12)
+  return normalized.slice(0, 64 - 12 - 1) + '_' + hash
+}
+
+/**
+ * Flatten MCP content blocks to text, mirroring mcp-client's extractText.
+ * @param content - the result content blocks.
+ * @returns the joined text projection.
+ */
+function extractTextLite(content: unknown[]): string {
+  const parts: string[] = []
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') {
+      parts.push('[unsupported content type: ' + String(block) + ']')
+    } else if ((block as Record<string, unknown>).type === 'text') {
+      const text = (block as Record<string, unknown>).text
+      parts.push(typeof text === 'string' ? text : '')
+    } else if ((block as Record<string, unknown>).type === 'image') {
+      const mime = (block as Record<string, unknown>).mimeType
+      parts.push('[image: ' + String(mime ?? 'unknown') + ', content discarded]')
+    } else if ((block as Record<string, unknown>).type === 'audio') {
+      const mime = (block as Record<string, unknown>).mimeType
+      parts.push('[audio: ' + String(mime ?? 'unknown') + ', content discarded]')
+    } else if ((block as Record<string, unknown>).type === 'resource' || (block as Record<string, unknown>).type === 'resource_link') {
+      parts.push('[resource: content discarded]')
+    } else {
+      parts.push('[unsupported content type: ' + String((block as Record<string, unknown>).type) + ']')
+    }
+  }
+  return parts.join('')
+}
+
+/** Rendered output element createOutputLite's render returns. */
+interface OutputTextElement {
+  type: 'text'
+  text: string
+}
+
+/** The output descriptor shape for one bridged tool (mcp-client's shape). */
+interface ToolOutput {
+  schema: Record<string, unknown>
+  render: (args: unknown, value: unknown) => OutputTextElement[]
+}
+
+/**
+ * Create the output descriptor for one bridged tool (mcp-client's shape).
+ * @param rawName - the MCP tool name, for render fallbacks.
+ */
+function createOutputLite(rawName: string): ToolOutput {
+  return {
+    schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'array', items: {} },
+        structuredContent: {},
+      },
+      required: ['content'],
+      additionalProperties: false,
+    },
+    render(_args: unknown, value: unknown) {
+      const result = value as { content?: unknown } | null
+      const content = result && typeof result === 'object' && Array.isArray(result.content) ? result.content : []
+      return [{ type: 'text', text: extractTextLite(content) || ('(no output from ' + rawName + ')') }]
+    },
+  }
+}
 
 /**
  * The supervisor surface this runtime needs — declared HERE, decoupled from

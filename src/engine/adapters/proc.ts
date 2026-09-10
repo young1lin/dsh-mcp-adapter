@@ -3,7 +3,6 @@ import { Client } from "@modelcontextprotocol/client";
 import type { Server } from "@modelcontextprotocol/server";
 import type { Adapter } from "./types.js";
 import { treeKill } from "../process-tree.js";
-import { noteProcPid, dropProcPid } from "../proc-pids.js";
 import { makeProxyServer, type ProxyOpts } from "./proxy.js";
 import { loginPath } from "../pathenv.js";
 
@@ -165,7 +164,6 @@ export class ProcAdapter implements Adapter {
     }
     this.childPid = transport.pid ?? undefined; // remember for tree-kill on close()
     this.child = (transport as unknown as { _process?: { exitCode: number | null; signalCode: string | null } })._process;
-    if (this.childPid) noteProcPid(this.childPid); // ledger it, so a future boot can reap this child if we die hard
     this.server = makeProxyServer(this.client, this.proxyOpts());
     return this.server;
   }
@@ -239,7 +237,6 @@ export class ProcAdapter implements Adapter {
     // cascade to children, so the grandchild server would survive as an orphan. taskkill /T tears
     // down the whole subtree (cmd.exe -> npx -> real server) regardless of spawn depth.
     const pid = this.childPid;
-    if (pid) dropProcPid(pid); // closed cleanly -> no longer a candidate for orphan reaping on next boot
     // Skip the kill when the child is known to have exited already: its PID is free for Windows to
     // hand to something else, and /T /F would take that process and its whole subtree down with it.
     const exited = this.childExited() === true;

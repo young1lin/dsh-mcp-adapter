@@ -79,11 +79,12 @@ describe("router plumbing (echo adapter)", () => {
     expect(res.body.health).toBeUndefined();
   });
 
-  it("serves the management dashboard at /", async () => {
+  // There is no management dashboard anymore: / falls through to the MCP
+  // catch-all (GET is unserved) — the only surfaces are MCP POSTs and /health.
+  it("GET / is not served — the dashboard is gone, /health is the probe", async () => {
     const app = buildApp(await echoRegistry(), singleTokenManager(TOKEN));
-    const res = await request(app).get("/");
-    expect(res.status).toBe(200);
-    expect(res.text).toContain("MCP Gateway");
+    expect((await request(app).get("/")).status).toBe(404);
+    expect((await request(app).get("/health")).status).toBe(200);
   });
 
   // On the 2026-07-28 protocol the gateway serves notifications through the client's subscriptions/listen

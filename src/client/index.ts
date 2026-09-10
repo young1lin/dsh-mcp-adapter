@@ -2,9 +2,8 @@
  * The browser half (bundled by esbuild into dist/client.js): one
  * __ModuleLoader__ factory registering
  *  - a「MCP 与连接」settings section (id mcp-connections — NOT Requests),
- *    with the workbench + data + traffic + tunnels + advanced sub-views as
- *    tabs (each a STABLE component identity — conditional direct calls of
- *    hook-using pages broke hook order),
+ *    with the workbench + advanced sub-views as tabs (each a STABLE component
+ *    identity — conditional direct calls of hook-using pages broke hook order),
  *  - a conversation「MCP」tab bound to the REAL sessionId prop, showing
  *    snapshot vs current vs pending session overrides.
  * Host data flows only through the same-origin /dsh-mcp-manager bridge.
@@ -13,9 +12,6 @@ import { NS, en, zh } from './i18n.js'
 import { css, kit, type ReactLike } from './ui.js'
 import { paintNavIcon } from './nav-icon.js'
 import { makeMcpWorkbench } from './pages/mcp.js'
-import { makeDataPage } from './pages/data.js'
-import { makeTrafficPage } from './pages/traffic.js'
-import { makeTunnelsPage } from './pages/tunnels.js'
 import { makeAdvancedPage } from './pages/advanced.js'
 import { makeSessionTab, type StartNext } from './pages/session.js'
 
@@ -112,29 +108,19 @@ window.__ModuleLoader__!.load({
     // functions directly as conditional children) is what keeps every page's
     // hooks in their own component instance.
     const McpPane = makeMcpWorkbench(React, k)
-    const DataPane = makeDataPage(React, k)
-    const TrafficPane = makeTrafficPage(React, k)
-    const TunnelsPane = makeTunnelsPage(React, k)
     const AdvancedPane = makeAdvancedPage(React, k)
     const SessionTab = makeSessionTab(React, k)
 
-    /** The settings body: tabbed workbench (MCP / data / traffic / SSH / advanced). */
+    /** The settings body: tabbed workbench (MCP / advanced). */
     function Workbench(props: { t?: T }) {
       const t = props.t ?? ((key: string) => key)
-      const [tab, setTab] = React.useState<'mcp' | 'data' | 'traffic' | 'tunnels' | 'advanced'>('mcp')
+      const [tab, setTab] = React.useState<'mcp' | 'advanced'>('mcp')
       return k.h('div', { className: 'mmc-root', style: { padding: '16px', overflow: 'auto', height: '100%' } },
         k.tabs([
           { key: 'mcp', label: t('entries') },
-          { key: 'data', label: t('dataTitle') },
-          { key: 'traffic', label: t('trafficTitle') },
-          { key: 'tunnels', label: t('tunnels') },
           { key: 'advanced', label: t('advanced') },
         ], tab, (x) => setTab(x as typeof tab)),
-        tab === 'mcp' ? k.h(McpPane, { t }) :
-        tab === 'data' ? k.h(DataPane, { t }) :
-        tab === 'traffic' ? k.h(TrafficPane, { t }) :
-        tab === 'tunnels' ? k.h(TunnelsPane, { t }) :
-        k.h(AdvancedPane, { t }),
+        tab === 'mcp' ? k.h(McpPane, { t }) : k.h(AdvancedPane, { t }),
       )
     }
 

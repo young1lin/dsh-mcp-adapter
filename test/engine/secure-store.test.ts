@@ -112,7 +112,7 @@ describe("sealed state files", () => {
 
   it("refuses a file sealed on ANOTHER machine — the anti-copy property", () => {
     const otherMachine = Buffer.from("99".repeat(32), "hex");
-    const p = join(dir, "tunnels.json");
+    const p = join(dir, "managed.json");
     writeFileSync(p, JSON.stringify(seal(otherMachine, "dpapi", JSON.stringify({ password: "ssh-secret" }))));
     expect(() => readSecureJson(p)).toThrow(/cannot decrypt/);
   });
@@ -174,35 +174,5 @@ describe("loadConfig over sealed state", () => {
     expect((resolveDef(cfg.servers.mysql) as Record<string, unknown>).password).toBe("mpass-9"); // real only at build
     delete process.env.MYSQL_PASS;
     delete process.env.MCP_GATEWAY_TOKEN;
-  });
-});
-
-describe("export / import (the recovery path)", () => {
-  it("round-trips a whole install into a fresh data dir, re-sealed", async () => {
-    const { exportState, importState, readGatewayToken } = await import("../../src/engine/daemon.js");
-    writeEnvStore({ MCP_GATEWAY_TOKEN: "tok-export" });
-    writeSecureJson(join(home, "gateway.config.json"), {
-      port: 19999, host: "127.0.0.1", tokenEnv: "MCP_GATEWAY_TOKEN",
-      servers: { echo: { type: "echo" } },
-    });
-    writeSecureJson(join(home, "managed.json"), { mcps: [{ name: "m", def: { type: "echo" }, enabled: true }] });
-
-    const bundle = exportState();
-    expect(bundle.config).toMatchObject({ port: 19999 });
-    expect(bundle.env).toMatchObject({ MCP_GATEWAY_TOKEN: "tok-export" });
-    expect(readGatewayToken()).toBe("tok-export");
-
-    // The "new machine": a fresh data dir. The bundle restores and everything reads back.
-    const fresh = mkdtempSync(join(tmpdir(), "sec-home2-"));
-    process.env.MCP_GATEWAY_HOME = fresh;
-    try {
-      const restored = importState(bundle);
-      expect(restored).toContain("gateway.config.json");
-      expect(restored).toContain("env.json");
-      expect(readSecureJson<Record<string, any>>(join(fresh, "gateway.config.json"))).toMatchObject({ port: 19999 });
-      expect(readGatewayToken()).toBe("tok-export");
-    } finally {
-      rmSync(fresh, { recursive: true, force: true });
-    }
   });
 });

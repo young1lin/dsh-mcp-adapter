@@ -1,21 +1,18 @@
 /**
  * Typed connection schemas — the form behind "Add an MCP".
  *
- * The engine has always shipped in-process drivers for mysql / pg / redis /
- * mongo plus proc / http / rest / echo (src/engine/adapters/*), the config
- * layer validates them (config/service.ts validateNativeDef) and the Data tab
- * browses them. The only thing missing was a way to CREATE one: the editor
- * was a bare JSON textarea, so every driver was reachable only by knowing its
- * option names by heart. This module is that missing half — the same field
- * set the gateway panel had, typed, bilingual, and round-trippable.
+ * The engine hosts proc / http / echo adapters (src/engine/adapters/*), the
+ * config layer validates them (config/service.ts validateNativeDef), and the
+ * editor is typed, bilingual, and round-trippable. The key names here are the
+ * keys the ADAPTERS actually read, never a parallel vocabulary.
  *
  * Two rules make the form safe to put in front of an existing definition:
- *  - the key names here are the keys the ADAPTERS actually read (verified
- *    against src/engine/adapters/*.ts), never a parallel vocabulary;
  *  - a definition is never rebuilt from the form alone. formToDef starts from
  *    the original object, so a key this schema does not model survives an
  *    edit instead of being silently dropped (unknownKeys reports them, and
  *    the editor says so rather than pretending the form is the whole truth).
+ *  - a def of a type this build no longer hosts (a mysql entry from the full
+ *    build, say) opens the JSON fallback, not a form that would mangle it.
  *
  * `lazy` is exposed as itself, not as an inverted "start automatically"
  * checkbox: the def is what gets stored, and a form that writes a different
@@ -66,9 +63,6 @@ const LAZY_OFF: FieldSpec = {
   hintEn: 'Off by default: connect at boot. On means the first request pays the connection cost.',
   hintZh: '默认关闭：启动时就连接。开启则由第一次请求承担连接开销。',
 }
-const READONLY = (hintEn: string, hintZh: string): FieldSpec =>
-  ({ k: 'readonly', en: 'Read-only', zh: '只读', bool: true, hintEn, hintZh })
-const MAX_ROWS: FieldSpec = { k: 'maxRows', en: 'Default row limit', zh: '默认返回行数上限', num: true, half: true, ph: '200' }
 const HEADERS: FieldSpec = {
   k: 'headers', en: 'Headers (NAME=VALUE per line)', zh: '请求头（每行 NAME=VALUE）', area: true, kv: true,
   ph: 'Authorization=Bearer ${MY_API_KEY}',
@@ -121,65 +115,10 @@ const NATIVE: Record<string, FieldSpec[]> = {
     },
     LAZY_ON,
   ],
-  mysql: [
-    DESCRIPTION,
-    { k: 'host', en: 'Host', zh: '主机', half: true, ph: '127.0.0.1' },
-    { k: 'port', en: 'Port', zh: '端口', num: true, half: true, ph: '3306' },
-    { k: 'user', en: 'User', zh: '用户', half: true, ph: 'root' },
-    { k: 'password', en: 'Password', zh: '密码', half: true, ph: '${MYSQL_PASSWORD}' },
-    { k: 'database', en: 'Database', zh: '数据库', half: true },
-    { k: 'timezone', en: 'Timezone', zh: '时区', half: true, ph: 'Z' },
-    MAX_ROWS,
-    READONLY('Refuses writes, and sets the session read-only server-side.', '拒绝写入，同时在服务端把会话设为只读。'),
-    LAZY_OFF,
-  ],
-  pg: [
-    DESCRIPTION,
-    { k: 'url', en: 'Connection URL', zh: '连接串', area: true, ph: 'postgresql://user:pass@127.0.0.1:5432/db?sslmode=disable' },
-    MAX_ROWS,
-    READONLY('Sets default_transaction_read_only on the session.', '在会话上设置 default_transaction_read_only。'),
-    LAZY_OFF,
-  ],
-  redis: [
-    DESCRIPTION,
-    { k: 'host', en: 'Host', zh: '主机', half: true, ph: '127.0.0.1' },
-    { k: 'port', en: 'Port', zh: '端口', num: true, half: true, ph: '6379' },
-    { k: 'password', en: 'Password', zh: '密码', half: true, ph: '${REDIS_PASSWORD}' },
-    { k: 'db', en: 'DB index', zh: '库序号', num: true, half: true, ph: '0' },
-    READONLY('Only read commands are accepted.', '只接受读命令。'),
-    { k: 'allowDestructive', en: 'Allow FLUSHALL / FLUSHDB', zh: '允许 FLUSHALL / FLUSHDB', bool: true },
-    {
-      k: 'allowEval', en: 'Allow Lua (EVAL / FCALL)', zh: '允许 Lua（EVAL / FCALL）', bool: true,
-      hintEn: 'A script is opaque to every other rule here — it can reach anything they refuse.',
-      hintZh: '脚本对上面所有规则都是黑盒——它能做到那些规则明确拒绝的事。',
-    },
-    LAZY_OFF,
-  ],
-  mongo: [
-    DESCRIPTION,
-    { k: 'url', en: 'Connection URL', zh: '连接串', area: true, ph: 'mongodb://user:pass@127.0.0.1:27017/db?authSource=admin' },
-    { k: 'database', en: 'Database (override)', zh: '数据库（覆盖）', half: true, ph: 'defaults to the URL path' },
-    MAX_ROWS,
-    READONLY('Hides the write tools and refuses $out / $merge.', '隐藏写工具，并拒绝 $out / $merge。'),
-    LAZY_OFF,
-  ],
   http: [
     DESCRIPTION,
     { k: 'url', en: 'Endpoint URL', zh: '服务地址', area: true, ph: 'https://mcp.context7.com/mcp' },
     HEADERS, PROXY, EXPOSE_RESOURCES, EXPOSE_PROMPTS, LAZY_OFF,
-  ],
-  rest: [
-    DESCRIPTION,
-    { k: 'baseUrl', en: 'Base URL', zh: '基地址', ph: 'https://api.github.com' },
-    HEADERS, PROXY,
-    {
-      k: 'tools', en: 'Tool declarations (JSON)', zh: '工具声明（JSON）', area: true, json: true,
-      ph: '[{"name":"get_repo","description":"Get a public GitHub repo.","input":{"owner":{"type":"string","required":true},"repo":{"type":"string","required":true}},"request":{"method":"GET","path":"/repos/{{owner}}/{{repo}}"},"pick":["full_name","description","stargazers_count"]}]',
-      hintEn: 'Paste the vendor’s own example with {{arg}} in the slots the model should fill. Note {{arg}} is a tool argument — ${VAR} is an environment variable.',
-      hintZh: '把厂商文档里的示例贴进来，需要模型填的位置写 {{参数名}}。注意 {{参数}} 是工具入参，${变量} 是环境变量。',
-    },
-    { k: 'timeoutMs', en: 'Timeout (ms)', zh: '超时（毫秒）', num: true, half: true, ph: '30000' },
-    LAZY_OFF,
   ],
   echo: [DESCRIPTION],
 }
@@ -189,19 +128,14 @@ const LABELS: Record<string, { en: string; zh: string }> = {
   stdio: { en: 'stdio — run a command locally', zh: 'stdio — 本地启动一个命令' },
   remote: { en: 'remote — an MCP server over http/sse', zh: 'remote — 远端 http/sse 的 MCP 服务' },
   proc: { en: 'proc — spawn a command and proxy it', zh: 'proc — 启动命令并代理它' },
-  mysql: { en: 'mysql — in-process driver', zh: 'mysql — 内置驱动直连' },
-  pg: { en: 'postgres — in-process driver', zh: 'postgres — 内置驱动直连' },
-  redis: { en: 'redis — in-process driver', zh: 'redis — 内置驱动直连' },
-  mongo: { en: 'mongo — in-process driver', zh: 'mongo — 内置驱动直连' },
   http: { en: 'http — proxy a remote MCP endpoint', zh: 'http — 代理远端 MCP 端点' },
-  rest: { en: 'rest — declare tools over a plain HTTP API', zh: 'rest — 在普通 HTTP API 上声明工具' },
   echo: { en: 'echo — a built-in probe, for checking wiring', zh: 'echo — 内置探针，用来验证链路' },
 }
 
-/** Types a layer can hold. Native layers get the drivers; standard files cannot. */
+/** Types a layer can hold. Native layers get the adapters; standard files cannot. */
 export function typesFor(layerId: string | undefined): string[] {
   return layerId === 'global:native' || layerId === 'project:native'
-    ? ['proc', 'mysql', 'pg', 'redis', 'mongo', 'http', 'rest', 'echo']
+    ? ['proc', 'http', 'echo']
     : ['stdio', 'remote']
 }
 

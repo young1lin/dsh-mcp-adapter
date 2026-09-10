@@ -315,7 +315,7 @@ export function createConfigService(options: ConfigServiceOptions) {
 function validateNativeDef(name: string, def: McpDefinition): string | undefined {
   if (def.disabled === true && def.type === undefined) return undefined
   if (typeof def.type !== 'string' || def.type.length === 0) {
-    return 'native entry "' + name + '" needs a "type" (mysql|redis|pg|mongo|proc|http|rest|echo|adapter)'
+    return 'native entry "' + name + '" needs a "type" (proc|http|echo|adapter)'
   }
   return undefined
 }

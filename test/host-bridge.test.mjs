@@ -96,7 +96,7 @@ test('bridge: preview + save round-trip through the real config service; fence g
   assert.equal(engine.json.off, true)
 })
 
-test('bridge: the P5/P6 management routes all answer (session, calls, traffic, data, tokens, env, backup)', async (t) => {
+test('bridge: the P5 management routes all answer (session, calls, tokens)', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-bridge2-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const globalFile = join(dir, 'agents.json')
@@ -114,27 +114,11 @@ test('bridge: the P5/P6 management routes all answer (session, calls, traffic, d
         case 'mcp.calls': return { name: params.name, calls: [{ seq: 9, ts: 't', tool: 'x', preview: 'p' }], page: params.page, pageSize: 20, more: false }
         case 'mcp.callDetail': return { call: { seq: params.seq, tool: 'x', output: 'full' } }
         case 'mcp.callSources': return { sources: [{ name: params.name, session: false }, { name: 's0123456789-abcdef0123-' + params.name, session: true, lastSeq: 4 }] }
-        case 'traffic.list': return { rows: [{ seq: 1, ts: 't', mcp: 'm', client: 'c', method: 'tools/call' }], total: 1, page: 0, clients: ['c'] }
-        case 'traffic.detail': return { entry: { seq: params.seq, body: 'b' } }
-        case 'traffic.clear': return { ok: true }
-        // The engine answers with the name it ACTUALLY hosts the definition under, which is not
-        // the one we sent whenever an identical def is already up: mcp.ensure matches on the
-        // definition hash. Every caller must address the answer.
-        case 'mcp.ensure': return { name: 's0123456789-abcdef0123-' + params.name, lifecycle: 'started' }
-        case 'data.connections': return { connections: [{ name: 'db1', dialect: 'mysql', label: 'l', readonly: false, state: 'started', editable: true }] }
-        case 'data.operation': {
-          if (params.op === 'tables') return { tables: [{ schema: 's', name: 'users', type: 'BASE', approxRows: 42, size: '1MB' }], total: 1, page: 0 }
-          if (params.op === 'data') return { columns: [{ name: 'id', dataType: 'int' }], rows: [{ id: 1 }], total: 1, offset: 0, limit: 50, editable: false, editNote: 'readonly' }
-          if (params.op === 'query') return { columns: ['id'], rows: [{ id: 1 }], rowCount: 1 }
-          throw new Error('unexpected op ' + params.op)
-        }
         case 'tokens.list': return { tokens: [{ id: 'default', label: 'default', createdAt: '' }] }
         case 'tokens.create': return { id: 't1', label: params.label, secret: 's1', createdAt: 'x' }
         case 'tokens.reveal': return { id: params.id, label: 'l', secret: 'sec' }
         case 'tokens.rotate': return { id: params.id, label: 'l', secret: 'sec2' }
         case 'tokens.revoke': return { ok: true }
-        case 'env.list': return { vars: [{ name: 'A' }] }
-        case 'env.set': return { saved: params.name }
         default: throw new Error('unexpected method ' + method)
       }
     },
@@ -145,10 +129,8 @@ test('bridge: the P5/P6 management routes all answer (session, calls, traffic, d
   mountBridge(web, { config: svc, engine: () => fakeEngine, storageDir: dir, globalFile })
   const H = (method, path, opts = {}) => handle(registered.handler, fakeReq(method, '/dsh-mcp-manager' + path, opts), fakeRes())
 
-  // seed: a global standard entry + a native mysql entry (for the /data ensure chain)
+  // seed: a global standard entry
   await H('POST', '/entry', { body: { level: 'global', source: 'standard', name: 'alpha', def: { command: 'node x.js' }, expectedRevision: '' } })
-  const { globalCatalogPath, writeCatalog } = await import('../dist/config/native-catalog.js')
-  await writeCatalog(globalCatalogPath(dir), { schemaVersion: 1, entries: { db1: { def: { type: 'mysql', url: 'mysql://u:p@127.0.0.1:3306/x' }, enabled: true } } })
 
   // --- session view: empty file answers revision + no snapshot ---
   const s1 = await H('GET', '/session?ss=sess1')
@@ -158,7 +140,7 @@ test('bridge: the P5/P6 management routes all answer (session, calls, traffic, d
 
   // --- session view: a v2 snapshot maps to {revision, registeredAt, tools} ---
   const { writeSessionFile, sessionFilePath } = await import('../dist/config/session-store.js')
-  const { publicNameLite } = await import('../dist/session.js')
+  const { publicNameLite } = await import('../dist/runtime/session-runtime.js')
   await writeSessionFile(sessionFilePath(dir, 'sess2'), {
     schemaVersion: 1, overrides: {},
     snapshot: { version: 2, workspaceId: 'w', registeredAt: 'R', configRevision: 'CR', servers: [{ logical: 'logical', instance: 'inst1', def: { type: 'echo' }, tools: [{ name: 'toolA' }] }] },
@@ -171,54 +153,20 @@ test('bridge: the P5/P6 management routes all answer (session, calls, traffic, d
   assert.equal(sBad.status, 400)
 
   // --- calls: page + detail ---
-  const c1 = await H('GET', '/mcp/db1/calls?page=2')
+  const c1 = await H('GET', '/mcp/alpha/calls?page=2')
   assert.equal(c1.status, 200)
-  assert.equal(c1.json.name, 'db1')
-  assert.deepEqual(seen.at(-1), { method: 'mcp.calls', params: { name: 'db1', page: 2 } })
-  const c2 = await H('GET', '/mcp/db1/calls/9')
+  assert.equal(c1.json.name, 'alpha')
+  assert.deepEqual(seen.at(-1), { method: 'mcp.calls', params: { name: 'alpha', page: 2 } })
+  const c2 = await H('GET', '/mcp/alpha/calls/9')
   assert.equal(c2.status, 200)
-  assert.deepEqual(seen.at(-1), { method: 'mcp.callDetail', params: { name: 'db1', seq: 9 } })
+  assert.deepEqual(seen.at(-1), { method: 'mcp.callDetail', params: { name: 'alpha', seq: 9 } })
   // A HYPHENATED action. The dispatcher matched actions with `\w+`, so this
   // route answered "no route" — a client-visible 500 for a route that was
   // wired end to end everywhere else.
-  const c3 = await H('GET', '/mcp/db1/call-sources')
+  const c3 = await H('GET', '/mcp/alpha/call-sources')
   assert.equal(c3.status, 200, 'hyphenated actions reach their handler')
   assert.equal(c3.json.sources.length, 2)
-  assert.deepEqual(seen.at(-1), { method: 'mcp.callSources', params: { name: 'db1' } })
-
-  // --- traffic: list (filters mapped), detail, clear (DELETE) ---
-  const t1 = await H('GET', '/traffic?mcp=db1&client=c&method=tools%2Fcall&actions=1&page=1')
-  assert.equal(t1.status, 200)
-  assert.deepEqual(t1.json.rows[0].client, 'c')
-  assert.deepEqual(seen.at(-1), { method: 'traffic.list', params: { mcp: 'db1', client: 'c', method: 'tools/call', actionsOnly: true, page: 1, pageSize: 0 } })
-  const t2 = await H('GET', '/traffic/7')
-  assert.deepEqual(seen.at(-1), { method: 'traffic.detail', params: { seq: 7 } })
-  const t3 = await H('DELETE', '/traffic?client=c')
-  assert.equal(t3.status, 200)
-  assert.deepEqual(seen.at(-1), { method: 'traffic.clear', params: { client: 'c' } })
-
-  // --- data: ensure-on-demand then connections; tables/data/query shape adaptation ---
-  const d1 = await H('GET', '/data')
-  assert.equal(d1.status, 200)
-  assert.equal(d1.json.connections[0].name, 'db1')
-  const ensured = seen.filter((x) => x.method === 'mcp.ensure')
-  assert.equal(ensured.length, 1)
-  assert.equal(ensured[0].params.name, 'db1')
-  assert.equal(ensured[0].params.def.type, 'mysql')
-  assert.deepEqual(seen.at(-1), { method: 'data.connections', params: { names: ['s0123456789-abcdef0123-db1'] } },
-    'the name the engine answered, not the one we sent')
-  const d2 = await H('GET', '/data/db1/tables?page=0&grep=us')
-  assert.equal(d2.status, 200)
-  assert.deepEqual(d2.json.tables, [{ name: 'users', rows: 42 }])
-  assert.equal(d2.json.total, 1)
-  const d3 = await H('GET', '/data/db1/data?table=users&offset=0&limit=50')
-  assert.equal(d3.status, 200)
-  assert.deepEqual(d3.json.columns, [{ name: 'id', type: 'int' }])
-  assert.equal(d3.json.reason, 'readonly')
-  const d4 = await H('POST', '/data/db1/query', { body: { sql: 'SELECT 1', limit: 100 } })
-  assert.equal(d4.status, 200)
-  assert.deepEqual(d4.json.columns, [{ name: 'id' }])
-  assert.equal(d4.json.truncated, false)
+  assert.deepEqual(seen.at(-1), { method: 'mcp.callSources', params: { name: 'alpha' } })
 
   // --- tokens: list/create/reveal/rotate/revoke ---
   const k1 = await H('GET', '/tokens')
@@ -234,29 +182,6 @@ test('bridge: the P5/P6 management routes all answer (session, calls, traffic, d
   const k5 = await H('DELETE', '/tokens/t1')
   assert.equal(k5.status, 200)
   assert.deepEqual(seen.at(-1), { method: 'tokens.revoke', params: { id: 't1' } })
-
-  // --- env: list / set / delete(null) ---
-  const e1 = await H('GET', '/env')
-  assert.deepEqual(e1.json.vars, [{ name: 'A' }])
-  await H('POST', '/env', { body: { name: 'MY_KEY', value: 'v' } })
-  assert.deepEqual(seen.at(-1), { method: 'env.set', params: { name: 'MY_KEY', value: 'v' } })
-  await H('DELETE', '/env/MY_KEY')
-  assert.deepEqual(seen.at(-1), { method: 'env.set', params: { name: 'MY_KEY', value: null } })
-
-  // --- backup: export → mutate → restore(merge) round-trip over real files ---
-  const b1 = await H('GET', '/backup/export')
-  assert.equal(b1.status, 200)
-  assert.equal(b1.json.version, 1)
-  assert.equal(b1.json.payload.global.standard.mcpServers.alpha.command, 'node x.js')
-  assert.equal(b1.json.payload.global.native.db1.def.type, 'mysql')
-  const b2 = await H('POST', '/backup/restore', { body: { payload: { global: { standard: { mcpServers: { beta: { command: 'node b.js' } } } } }, mode: 'merge' } })
-  assert.equal(b2.status, 200)
-  assert.equal(b2.json.restored['global:standard'], 1)
-  const after = await H('GET', '/preview')
-  const names = after.json.entries.map((e) => e.name).sort()
-  assert.ok(names.includes('alpha'), 'merge keeps alpha')
-  assert.ok(names.includes('beta'), 'merge adds beta')
-  assert.ok(names.includes('db1'), 'merge keeps native db1')
 })
 
 test('bridge: /import plans a pasted document as a dry run, then writes it entry by entry', async (t) => {
@@ -430,74 +355,6 @@ test('bridge: /view persists grouping and order without touching any config laye
   const after = (await H('GET', '/view')).json
   assert.equal(after.entries.bravo?.group, 'ai', 'the new name keeps the grouping')
   assert.equal(after.entries.beta, undefined, 'the old name is gone')
-})
-
-test('bridge: the data plane forwards all ten read ops — redis and mongo were listed but unreachable', async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'mcp-dataops-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const svc = createConfigService({ storageDir: dir, globalFile: join(dir, 'agents.json'), workspaceResolver: { resolve: () => ({ root: dir }) } })
-  const seen = []
-  const fakeEngine = {
-    request: async (method, params) => {
-      seen.push({ method, params })
-      if (method === 'data.operation') return { op: params.op }
-      throw new Error('unexpected method ' + method)
-    },
-  }
-  let registered = null
-  mountBridge({ register: (route) => { registered = route; return () => {} } }, { config: svc, engine: () => fakeEngine, storageDir: dir })
-  const H = (method, path, body) => handle(registered.handler, fakeReq(method, '/dsh-mcp-manager' + path, body !== undefined ? { body } : {}), fakeRes())
-  const opOf = (i) => seen[i].params.op
-
-  // sql: the two ops that existed in the engine and had no route at all
-  assert.equal((await H('GET', '/data/db1/schema?table=users')).status, 200)
-  assert.equal(opOf(0), 'schema')
-  assert.equal(seen[0].params.table, 'users')
-  assert.equal((await H('GET', '/data/db1/export?table=users&format=csv')).status, 200)
-  assert.equal(opOf(1), 'export')
-  assert.equal(seen[1].params.format, 'csv')
-
-  // sql: readTable always accepted sort + filters; the route never passed them
-  await H('GET', '/data/db1/data?table=users&order=id&dir=desc&filters=' + encodeURIComponent('[{"column":"id","op":"gt","value":"5"}]'))
-  assert.equal(seen[2].params.order, 'id')
-  assert.equal(seen[2].params.dir, 'desc')
-  assert.equal(seen[2].params.filters, '[{"column":"id","op":"gt","value":"5"}]')
-
-  // redis: three ops, previously zero routes — a redis connection appeared in
-  // the picker and then failed on every single click
-  await H('GET', '/data/r1/keys?pattern=user:*&type=hash')
-  assert.equal(opOf(3), 'keys')
-  assert.equal(seen[3].params.pattern, 'user:*')
-  assert.equal(seen[3].params.type, 'hash')
-  await H('GET', '/data/r1/key?key=user:7')
-  assert.equal(opOf(4), 'key')
-  assert.equal(seen[4].params.key, 'user:7')
-  await H('POST', '/data/r1/command', { command: 'GET user:7', confirm: true })
-  assert.equal(opOf(5), 'command')
-  assert.equal(seen[5].params.confirm, true, 'the console’s own Run is the confirmation the engine demands')
-
-  // and the bridge never confirms on the caller's behalf
-  await H('POST', '/data/r1/command', { command: 'FLUSHALL' })
-  assert.equal(seen[6].params.confirm, false)
-
-  // mongo: two ops, previously zero routes
-  await H('GET', '/data/m1/collections?grep=user')
-  assert.equal(opOf(7), 'collections')
-  assert.equal(seen[7].params.grep, 'user')
-  await H('GET', '/data/m1/docs?collection=users&filter=' + encodeURIComponent('{"active":true}') + '&offset=50')
-  assert.equal(opOf(8), 'docs')
-  assert.equal(seen[8].params.collection, 'users')
-  assert.equal(seen[8].params.filter, '{"active":true}')
-  assert.equal(seen[8].params.offset, '50')
-
-  // the WRITE ops stay unexposed until they have a confirmation flow of their
-  // own: no route claims them, so nothing can reach applyEdits/ddlOp/import
-  const before = seen.length
-  for (const path of ['/data/db1/edits', '/data/db1/ddl', '/data/db1/import']) {
-    const out = await H('POST', path, {})
-    assert.match(String(out.json.error ?? ''), /no route/, path + ' must not be reachable yet')
-  }
-  assert.equal(seen.length, before, 'and no write op reached the engine')
 })
 
 test('listener: resolving the MCP endpoint — config first, then the panel, then off', () => {

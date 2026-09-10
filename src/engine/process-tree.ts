@@ -1,6 +1,4 @@
 import { execFile } from "node:child_process";
-import { log } from "./log.js";
-import { listDaemonPorts, pidAlive, readPidFile } from "./pidfile.js";
 
 /**
  * Force-kill a process AND its whole descendant tree.
@@ -57,81 +55,4 @@ $legit | ForEach-Object { $_ }
       resolve(out); // a PowerShell failure degrades to "only ownPid" — safe (reaps nothing extra)
     });
   });
-}
-
-// Command-line substrings that identify the MCP packages this gateway launches. Used by the
-// startup orphan sweep. Extend when new packages are added to gateway.config.json.
-const MCP_PACKAGE_RE = "mcp-server-mysql|postgres-mcp-server|redis-mcp-server";
-
-/**
- * Find node processes running one of our MCP packages that are NOT descendants of `ownPid` —
- * i.e. orphaned by a previous gateway instance that was hard-killed (task /End, crash) before its
- * close() could tree-kill them. Returns their PIDs.
- *
- * Builds the descendant set of this process with PowerShell, following ALL process types (not just
- * node) so the cmd.exe / npx layers in the spawn chain are walked correctly — a node-only walk
- * would break at cmd.exe and falsely flag live servers as orphans.
- */
-function findOrphanMcps(ownPid: number): Promise<number[]> {
-  if (process.platform !== "win32") return Promise.resolve([]);
-  const script = `
-$gw = ${ownPid}
-$all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine
-$children = @{}
-foreach ($p in $all) { $pp = [int]$p.ParentProcessId; if (-not $children.ContainsKey($pp)) { $children[$pp] = New-Object System.Collections.Generic.List[int] }; [void]$children[$pp].Add([int]$p.ProcessId) }
-$legit = @{}; $q = New-Object System.Collections.Generic.Queue[int]; $q.Enqueue($gw); $legit[$gw] = $true
-while ($q.Count -gt 0) { $c = $q.Dequeue(); $kids = $children[$c]; if ($kids) { foreach ($k in $kids) { if (-not $legit.ContainsKey($k)) { $legit[$k] = $true; $q.Enqueue($k) } } } }
-$pat = '${MCP_PACKAGE_RE}'
-$all | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -and $_.CommandLine -match $pat -and -not $legit.ContainsKey([int]$_.ProcessId) } | ForEach-Object { [int]$_.ProcessId }
-`.trim();
-
-  const encoded = Buffer.from(script, "utf16le").toString("base64");
-  return new Promise((resolve) => {
-    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { windowsHide: true, timeout: 10000 }, (err, stdout) => {
-      if (err || !stdout) return resolve([]);
-      const pids = stdout
-        .trim()
-        .split(/\r?\n/)
-        .map((s) => Number(s.trim()))
-        .filter((n) => Number.isFinite(n) && n > 0);
-      resolve(pids);
-    });
-  });
-}
-
-/**
- * Whether another gateway instance is alive right now (any port, any data-dir pidfile).
- *
- * The orphan sweeps — both this file's command-line sweep and the proc-pid ledger — exist to clean
- * up after a PREVIOUS, dead instance. With a second instance running, "not my descendant" no longer
- * means "orphaned": the neighbour's children look exactly the same. So the sweeps stand down while
- * a sibling lives (see index.ts), and the port-scoped ledger keeps the instances out of each
- * other's way in the first place.
- */
-export function otherGatewayAlive(ownPid: number): boolean {
-  for (const port of listDaemonPorts()) {
-    const rec = readPidFile(port);
-    if (rec && rec.pid !== ownPid && pidAlive(rec.pid)) return true;
-  }
-  return false;
-}
-
-/**
- * Reclaim MCP server processes orphaned by a previous gateway instance. Call once at startup,
- * BEFORE starting any MCP of our own, so the sweep can't mistake a fresh child for an orphan.
- */
-export async function killOrphanMcps(ownPid: number): Promise<number[]> {
-  let pids: number[] = [];
-  try {
-    pids = await findOrphanMcps(ownPid);
-  } catch (err) {
-    log("warn", "orphan sweep failed", { err: (err as Error).message });
-    return [];
-  }
-  for (const pid of pids) {
-    log("warn", "killing orphan mcp process", { pid });
-    await treeKill(pid);
-  }
-  if (pids.length) log("info", "orphan mcp sweep complete", { killed: pids.length });
-  return pids;
 }

@@ -17,7 +17,7 @@ test('defaults: no config yields process-mode with standard files', () => {
   assert.deepEqual(resolved.disable, new Set())
   assert.equal(resolved.failOnStartupError, false)
   assert.equal(resolved.watch, false)
-  assert.equal(resolved.gateway, null)
+  assert.equal(resolved.engine, null)
   assert.equal(resolved.toolCallTimeoutMs, undefined)
 })
 
@@ -78,9 +78,9 @@ test('toolCallTimeoutMs must be a positive finite number', () => {
   assert.equal(validateConfig({ toolCallTimeoutMs: 1234 }).toolCallTimeoutMs, 1234)
 })
 
-test('gateway block resolves through the gateway validator', () => {
-  const withGateway = validateConfig({ gateway: true })
-  assert.notEqual(withGateway.gateway, null)
-  assert.equal(withGateway.gateway.url, 'http://127.0.0.1:19999')
-  assert.throws(() => validateConfig({ gateway: { nope: 1 } }), /unknown gateway config key "nope"/)
+test('the removed gateway block is refused with a pointer, not a generic unknown-key error', () => {
+  assert.throws(
+    () => validateConfig({ gateway: true }),
+    /the "gateway" discovery block was removed in the mcp-only build/,
+  )
 })

@@ -6,12 +6,7 @@ import { resolveDef, type ServerDef } from "../config.js";
 import { dataDir } from "../datadir.js";
 import { ProcAdapter } from "./proc.js";
 import { HttpAdapter } from "./http.js";
-import { RestAdapter } from "./rest.js";
 import { makeEchoAdapter } from "./echo.js";
-import { MysqlAdapter } from "./mysql.js";
-import { RedisAdapter } from "./redis.js";
-import { PgAdapter } from "./pg.js";
-import { MongoAdapter } from "./mongo.js";
 
 /** Build an Adapter from an already-`${ENV}`-resolved def. The unit this module registers. */
 export type AdapterFactory = (def: ServerDef, name?: string) => Adapter;
@@ -37,10 +32,9 @@ export function registerAdapterFactory(type: string, factory: AdapterFactory): v
  * reference — the plaintext credential exists just inside the adapter.
  *
  * Built-in families (registered below):
- * - **Direct** (`mysql`/`redis`/`pg`/`mongo`): in-process DB drivers, imported on first use. No child
- *   process, so nothing can orphan and memory is tiny (shared with the gateway).
  * - **proc**: spawn an arbitrary launch command (`npx -y @pkg`, `uvx ...`, `python -m ...`) and
- *   proxy MCP over stdio. Kept for any MCP without a direct adapter; tree-killed on close.
+ *   proxy MCP over stdio. The universal adapter — anything MCP speaks it; tree-killed on close.
+ * - **http**: proxy a remote streamable-HTTP MCP.
  *
  * A type that is not registered can still name a module to load at start — see ExternalAdapter.
  *
@@ -173,10 +167,6 @@ export function makeAdapter(rawDef: ServerDef, name?: string, alreadyResolved = 
 }
 
 // The built-ins. Registered once at module load; makeAdapter above is the only reader.
-registerAdapterFactory("mysql", (def, name) => new MysqlAdapter(def, name));
-registerAdapterFactory("redis", (def, name) => new RedisAdapter(def, name));
-registerAdapterFactory("pg", (def, name) => new PgAdapter(def, name));
-registerAdapterFactory("mongo", (def, name) => new MongoAdapter(def, name));
 registerAdapterFactory("proc", (def, name) =>
   new ProcAdapter({
     name,
@@ -192,7 +182,6 @@ registerAdapterFactory("proc", (def, name) =>
     disabledTools: def.disabledTools as string[] | undefined,
   }),
 );
-registerAdapterFactory("rest", (def, name) => new RestAdapter(def, name));
 registerAdapterFactory("http", (def, name) =>
   new HttpAdapter({
     name,

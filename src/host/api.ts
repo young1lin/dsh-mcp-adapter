@@ -52,8 +52,6 @@ export interface BridgeDeps {
    * different facts, and the panel has to show the one the user is living with.
    */
   listenerActual?: () => (ListenerState & { problem?: string }) | undefined
-  /** Global standard file path (backup export); defaults to ~/.agents/.mcp.json. */
-  globalFile?: string
   workspaces?: () => Array<{ id: string; path: string; title?: string }>
 }
 
@@ -378,7 +376,7 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
   if (method === 'GET' && path === '/session') {
     if (ss === undefined) throw Object.assign(new Error('ss is required'), { code: 'SCOPE' })
     const { readSessionFile, sessionFilePath, revisionOfSession, isRestorableSnapshot } = await import('../config/session-store.js')
-    const { publicNameLite } = await import('../session.js')
+    const { publicNameLite } = await import('../runtime/session-runtime.js')
     const { file } = await readSessionFile(sessionFilePath(deps.storageDir, ss))
     const snap = file.snapshot
     let snapshot: { revision: string; registeredAt: string; tools: string[] } | undefined
@@ -530,13 +528,7 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
     }
   }
 
-  // --- advanced plane (P5.6/P6): token reveal, migration plan/apply ---
-  if (method === 'POST' && path === '/skill/install') {
-    // lmg skill install 的 DSH 等效入口（P6.9）：同包引擎源码、宿主进程执行，
-    // 目标仍是 ~/.agents|~/.claude|~/.cursor 三个用户级 skill 目录（幂等替换）。
-    const { installSkill } = await import('../engine/skill-install.js')
-    return { installed: installSkill() }
-  }
+  // --- advanced plane: engine origin + default bearer for external clients ---
   if (method === 'GET' && path === '/creds') {
     // lmg creds 等效：默认令牌 + 引擎 origin（供外部客户端配置）。
     if (engine === undefined) throw new Error('engine is not enabled')
@@ -546,185 +538,8 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
   }
   if (method === 'GET' && path === '/token/default') {
     // EXPLICIT reveal (the user pressed the button); same policy as the
-    // engine's /api/tokens/:id/secret — an explicit act, never list payload.
+    // engine's token methods — an explicit act, never list payload.
     return engine.request('engine.bearer', undefined, { timeoutMs: 30000 })
-  }
-  if (method === 'GET' && path === '/migration/plan') {
-    const dir = String(req.query.get('dir') ?? '')
-    if (dir.length === 0) throw new Error('dir is required')
-    const { statSync } = await import('node:fs')
-    if (!statSync(dir).isDirectory()) throw new Error('dir is not a directory: ' + dir)
-    const { planMigration } = await import('../config/legacy-import.js')
-    return await planMigration(dir, deps.storageDir)
-  }
-  if (method === 'POST' && path === '/migration/apply') {
-    const dir = String(body.dir ?? '')
-    if (dir.length === 0) throw new Error('dir is required')
-    const { planMigration, applyMigration } = await import('../config/legacy-import.js')
-    const plan = await planMigration(dir, deps.storageDir)
-    return await applyMigration(plan, deps.storageDir)
-  }
-
-  // --- traffic plane (engine request-log; the Traffic page) ---
-  if (method === 'GET' && path === '/traffic') {
-    return engine.request('traffic.list', {
-      mcp: req.query.get('mcp') ?? '',
-      client: req.query.get('client') ?? '',
-      method: req.query.get('method') ?? '',
-      actionsOnly: req.query.get('actions') === '1',
-      page: Math.max(0, Number(req.query.get('page') ?? 0) || 0),
-      pageSize: Math.max(0, Number(req.query.get('pageSize') ?? 0) || 0),
-    }, { timeoutMs: 30000 })
-  }
-  const trafficEntryMatch = /^\/traffic\/(\d+)$/.exec(path)
-  if (trafficEntryMatch !== null && method === 'GET') {
-    return engine.request('traffic.detail', { seq: Number(trafficEntryMatch[1]) }, { timeoutMs: 30000 })
-  }
-  if (method === 'DELETE' && path === '/traffic') {
-    return engine.request('traffic.clear', { client: req.query.get('client') ?? '' }, { timeoutMs: 30000 })
-  }
-
-  // --- data plane (the Data page; ensure-on-demand over db-capable native entries) ---
-  if (method === 'GET' && path === '/data') {
-    const preview = await deps.config.preview({
-      ...(ws !== undefined ? { workspaceId: ws } : {}),
-      ...(ss !== undefined ? { sessionId: ss } : {}),
-      maskSecrets: false,
-    })
-    const names: string[] = []
-    for (const entry of preview.entries) {
-      if (entry.disabled || entry.source !== 'native') continue
-      const type = (entry.def as { type?: unknown }).type
-      if (typeof type !== 'string' || !['mysql', 'pg', 'mongo', 'redis'].includes(type)) continue
-      try {
-        // Address the name the ENGINE answered, never the one we sent. An
-        // identical definition that is already hosted — a session's instance,
-        // say — comes back under ITS name, because mcp.ensure matches on the
-        // definition hash rather than the name. data.connections filters by
-        // name, so pushing ours hid a database that was running right then.
-        const ensured = await engine.request(
-          'mcp.ensure', { name: entry.name, def: entry.def, start: true }, { timeoutMs: 120000 },
-        ) as { name?: unknown }
-        names.push(typeof ensured?.name === 'string' && ensured.name !== '' ? ensured.name : entry.name)
-      } catch { /* unreachable now: the connection is omitted from the browsable list */ }
-    }
-    return engine.request('data.connections', { names }, { timeoutMs: 30000 })
-  }
-  const dataTablesMatch = /^\/data\/([^/]+)\/tables$/.exec(path)
-  if (dataTablesMatch !== null && method === 'GET') {
-    const out = await engine.request('data.operation', {
-      name: decodeURIComponent(dataTablesMatch[1]!),
-      op: 'tables',
-      grep: req.query.get('grep') ?? '',
-      page: req.query.get('page') ?? '0',
-    }, { timeoutMs: 60000 }) as { tables?: Array<{ name?: string; approxRows?: number | null }>; total?: number; page?: number }
-    return {
-      tables: (out.tables ?? []).map((t) => ({ name: String(t.name ?? ''), ...(typeof t.approxRows === 'number' ? { rows: t.approxRows } : {}) })),
-      total: out.total ?? 0,
-      page: out.page ?? 0,
-    }
-  }
-  const dataReadMatch = /^\/data\/([^/]+)\/data$/.exec(path)
-  if (dataReadMatch !== null && method === 'GET') {
-    const out = await engine.request('data.operation', {
-      name: decodeURIComponent(dataReadMatch[1]!),
-      op: 'data',
-      table: req.query.get('table') ?? '',
-      offset: req.query.get('offset') ?? '0',
-      limit: req.query.get('limit') ?? '50',
-      // readTable has always accepted these; not forwarding them is what made
-      // the grid a fixed, unsortable, unfilterable window onto the table.
-      ...(req.query.get('order') !== null ? { order: req.query.get('order') } : {}),
-      ...(req.query.get('dir') !== null ? { dir: req.query.get('dir') } : {}),
-      ...(req.query.get('filters') !== null ? { filters: req.query.get('filters') } : {}),
-    }, { timeoutMs: 120000 }) as Record<string, unknown>
-    const columns = ((out.columns as Array<{ name?: string; dataType?: string }> | undefined) ?? [])
-      .map((c) => ({ name: String(c.name ?? ''), ...(c.dataType !== undefined ? { type: c.dataType } : {}) }))
-    return { ...out, columns, ...(typeof out.editNote === 'string' ? { reason: out.editNote } : {}) }
-  }
-  // The engine's data.operation answers thirteen ops; for a long time this
-  // bridge forwarded three, so `schema`/`export` were unreachable on SQL
-  // connections and redis/mongo had NO reachable operation at all — they
-  // still appeared in the picker (browsableConnections lists them), so every
-  // click on one failed. The rest of the read surface is wired below; the
-  // WRITE ops (edits/ddl/import) stay unexposed until they have a
-  // confirmation flow of their own.
-  const dataOp = (op: string) => {
-    const m = new RegExp('^/data/([^/]+)/' + op + '$').exec(path)
-    return m === null ? undefined : decodeURIComponent(m[1]!)
-  }
-  const dataSchemaName = dataOp('schema')
-  if (dataSchemaName !== undefined && method === 'GET') {
-    return engine.request('data.operation', {
-      name: dataSchemaName, op: 'schema',
-      table: req.query.get('table') ?? '',
-      ...(req.query.get('schema') !== null ? { schema: req.query.get('schema') } : {}),
-    }, { timeoutMs: 60000 })
-  }
-  const dataExportName = dataOp('export')
-  if (dataExportName !== undefined && method === 'GET') {
-    return engine.request('data.operation', {
-      name: dataExportName, op: 'export',
-      table: req.query.get('table') ?? '',
-      format: req.query.get('format') === 'json' ? 'json' : 'csv',
-      limit: req.query.get('limit') ?? '1000',
-    }, { timeoutMs: 120000 })
-  }
-  // --- redis ---
-  const redisKeysName = dataOp('keys')
-  if (redisKeysName !== undefined && method === 'GET') {
-    return engine.request('data.operation', {
-      name: redisKeysName, op: 'keys',
-      pattern: req.query.get('pattern') ?? '',
-      cursor: req.query.get('cursor') ?? '',
-      count: req.query.get('count') ?? '100',
-      type: req.query.get('type') ?? '',
-    }, { timeoutMs: 60000 })
-  }
-  const redisKeyName = dataOp('key')
-  if (redisKeyName !== undefined && method === 'GET') {
-    return engine.request('data.operation', { name: redisKeyName, op: 'key', key: req.query.get('key') ?? '' }, { timeoutMs: 60000 })
-  }
-  const redisCommandName = dataOp('command')
-  if (redisCommandName !== undefined && method === 'POST') {
-    // The engine gates `command` behind an explicit confirmation. The console
-    // forwards the user's own Run as that confirmation; the bridge never
-    // supplies it on the caller's behalf.
-    return engine.request('data.operation', {
-      name: redisCommandName, op: 'command',
-      command: String(body.command ?? ''),
-      confirm: body.confirm === true,
-    }, { timeoutMs: 60000 })
-  }
-  // --- mongo ---
-  const mongoCollectionsName = dataOp('collections')
-  if (mongoCollectionsName !== undefined && method === 'GET') {
-    return engine.request('data.operation', { name: mongoCollectionsName, op: 'collections', grep: req.query.get('grep') ?? '' }, { timeoutMs: 60000 })
-  }
-  const mongoDocsName = dataOp('docs')
-  if (mongoDocsName !== undefined && method === 'GET') {
-    return engine.request('data.operation', {
-      name: mongoDocsName, op: 'docs',
-      collection: req.query.get('collection') ?? '',
-      filter: req.query.get('filter') ?? '',
-      offset: req.query.get('offset') ?? '0',
-      limit: req.query.get('limit') ?? '50',
-    }, { timeoutMs: 120000 })
-  }
-  const dataQueryMatch = /^\/data\/([^/]+)\/query$/.exec(path)
-  if (dataQueryMatch !== null && method === 'POST') {
-    const limit = Math.max(1, Math.min(1000, Number(body.limit ?? 100) || 100))
-    const out = await engine.request('data.operation', {
-      name: decodeURIComponent(dataQueryMatch[1]!),
-      op: 'query',
-      sql: String(body.sql ?? ''),
-      limit,
-    }, { timeoutMs: 120000 }) as { columns?: string[]; rows?: Array<Record<string, unknown>>; rowCount?: number }
-    return {
-      columns: (out.columns ?? []).map((name) => ({ name })),
-      rows: out.rows ?? [],
-      truncated: (out.rowCount ?? 0) >= limit,
-    }
   }
 
   // --- tokens plane (named bearers; every secret read is an explicit action) ---
@@ -746,40 +561,6 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
   const tokenDeleteMatch = /^\/tokens\/([^/]+)$/.exec(path)
   if (tokenDeleteMatch !== null && method === 'DELETE') {
     return engine.request('tokens.revoke', { id: decodeURIComponent(tokenDeleteMatch[1]!) }, { timeoutMs: 30000 })
-  }
-
-  // --- env plane (sealed store; values never leave the engine) ---
-  if (method === 'GET' && path === '/env') {
-    return engine.request('env.list', undefined, { timeoutMs: 30000 })
-  }
-  if (method === 'POST' && path === '/env') {
-    return engine.request('env.set', { name: String(body.name ?? ''), value: body.value === null ? null : String(body.value ?? '') }, { timeoutMs: 30000 })
-  }
-  const envDeleteMatch = /^\/env\/([^/]+)$/.exec(path)
-  if (envDeleteMatch !== null && method === 'DELETE') {
-    return engine.request('env.set', { name: decodeURIComponent(envDeleteMatch[1]!), value: null }, { timeoutMs: 30000 })
-  }
-
-  // --- backup plane (export every layer; restore is explicit + mode-separated) ---
-  const wsRefs = () => (deps.workspaces?.() ?? []).map((w) => ({ id: w.id, root: w.path }))
-  if (method === 'GET' && path === '/backup/export') {
-    const { exportBackup } = await import('./backup.js')
-    return exportBackup({ storageDir: deps.storageDir, ...(deps.globalFile !== undefined ? { globalFile: deps.globalFile } : {}), workspaces: wsRefs() })
-  }
-  if (method === 'POST' && path === '/backup/restore') {
-    const { restoreBackup } = await import('./backup.js')
-    return restoreBackup({ storageDir: deps.storageDir, ...(deps.globalFile !== undefined ? { globalFile: deps.globalFile } : {}), workspaces: wsRefs() }, body.payload, body.mode === 'replace' ? 'replace' : 'merge')
-  }
-
-  // --- tunnel plane: one POST action endpoint, mirroring the IPC methods ---
-  if (method === 'GET' && path === '/tunnels') {
-    return engine.request('tunnels.list', undefined, { timeoutMs: 30000 })
-  }
-  if (method === 'POST' && path === '/tunnels') {
-    const op = String(body.op ?? '')
-    const allowed = ['upsertConnection', 'deleteConnection', 'testConnection', 'trustHostKey', 'upsertRule', 'deleteRule', 'startRule', 'stopRule', 'stopAll', 'port', 'portFree', 'groups', 'order'] as const
-    if (!(allowed as readonly string[]).includes(op)) throw new Error('unknown tunnel op: ' + op)
-    return engine.request('tunnels.' + op, body.params ?? {}, { timeoutMs: 120000 })
   }
 
   throw new Error('no route for ' + method + ' ' + path)

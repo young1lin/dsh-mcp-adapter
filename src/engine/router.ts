@@ -4,17 +4,10 @@ import { createMcpHandler, type Server } from "@modelcontextprotocol/server";
 import { bearerSecret } from "./auth.js";
 import { log } from "./log.js";
 import type { Registry, RegistryEntry } from "./registry.js";
-import type { ManagedStore } from "./managed.js";
 import type { TokenManager } from "./token.js";
-import { recordTraffic, recordBusEvent } from "./traffic.js";
-import { withCallClient, currentCallClient } from "./calls.js";
-import { makeAuthed, mountAdminApi } from "./adminapi.js";
-import { mountTunnelApi } from "./tunnels/api.js";
-import type { TunnelManager } from "./tunnels/manager.js";
-import type { TunnelStore } from "./tunnels/store.js";
-import { adminAsset, adminHtml } from "./admin.js";
+import { withCallClient } from "./calls.js";
 import { remoteRequestReason } from "./local-only.js";
-import { Router, header, sendEmpty, sendJson, sendText, type Handler, type Req, type Res } from "./http.js";
+import { Router, header, sendEmpty, sendJson, type Handler, type Req, type Res } from "./http.js";
 
 function jsonError(res: Res, status: number, message: string) {
   if (!res.headersSent) {
@@ -28,55 +21,17 @@ function jsonError(res: Res, status: number, message: string) {
 }
 
 /**
- * Capture the bytes written as the HTTP response body (clipped) so the traffic log can record what
- * was answered, not only what was asked. Wraps res.write/res.end transparently; toNodeHandler's write
- * backpressure (it relies on res.write's boolean return) is preserved by forwarding every argument
- * and the original return value unchanged. Returns the captured text once the response is finished.
- */
-function captureResponse(res: Res): () => string {
-  const chunks: Buffer[] = [];
-  let captured = 0;
-  const CAP = 16 * 1024; // enough to parse a typical JSON-RPC reply whole; larger replies are previewed
-  const push = (chunk: unknown) => {
-    if (chunk === undefined || chunk === null || captured >= CAP) return;
-    let b: Buffer | null = null;
-    if (typeof chunk === "string") b = Buffer.from(chunk);
-    else if (Buffer.isBuffer(chunk)) b = chunk;
-    else if (chunk instanceof Uint8Array) b = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-    if (!b) return;
-    const take = Math.min(b.length, CAP - captured);
-    chunks.push(take === b.length ? b : b.subarray(0, take));
-    captured += take;
-  };
-  const origWrite = res.write;
-  const origEnd = res.end;
-  res.write = function (this: Res, chunk?: unknown, ...rest: unknown[]) {
-    push(chunk);
-    return Reflect.apply(origWrite, this, chunk === undefined ? rest : [chunk, ...rest]) as boolean;
-  } as Res["write"];
-  res.end = function (this: Res, chunk?: unknown, ...rest: unknown[]) {
-    push(chunk);
-    return Reflect.apply(origEnd, this, chunk === undefined ? rest : [chunk, ...rest]) as Res;
-  } as Res["end"];
-  return () => Buffer.concat(chunks).toString("utf8");
-}
-
-/**
  * Build the gateway HTTP server. MCP endpoints are a catch-all single-segment route resolved
- * dynamically from the registry, so paths can be added/removed at runtime. If a managed store is
- * given, the management API is mounted under /api (loopback-guarded, no panel login).
+ * dynamically from the registry, so paths can be added/removed at runtime.
  *
  * Returns an unstarted http.Server: the caller calls listen(), and tests hand it to supertest.
  */
 export function buildApp(
   registry: Registry,
   tokens: TokenManager,
-  store?: ManagedStore,
   /** Name of the env var the token was seeded from. Safe to show in client configs. */
   tokenEnv = "MCP_GATEWAY_TOKEN",
-  /** SSH tunnels. Optional: without it the gateway serves exactly what it did before. */
-  tunnels?: { store: TunnelStore; manager: TunnelManager },
-  policy: { management?: boolean; publicNames?: ReadonlySet<string> } = {},
+  policy: { publicNames?: ReadonlySet<string> } = {},
 ): HttpServer {
   const r = new Router();
 
@@ -92,7 +47,7 @@ export function buildApp(
 
   /** Every MCP endpoint is bearer-gated against the token set, and answers a rejection in JSON-RPC
    *  shape. The matched token's label is carried across the SDK (via withCallClient) so the call log
-   *  and the traffic log can attribute every request to the client that made it. */
+   *  can attribute every request to the client that made it. */
   const bearer = (h: Handler): Handler => {
     const wrapped: Handler = (req, res) => {
       const rec = tokens.verify(bearerSecret(header(req, "authorization")));
@@ -168,27 +123,11 @@ export function buildApp(
     // Expose the SDK notifier so a tool/resource toggle can fan the change out to every active
     // subscriptions/listen stream a 2026-07-28 client holds (see ServerNotifier / notifyToolsChanged).
     registry.setNotifier(entry.name, handler.notify);
-    // The unified recording outlet: every change event the notifier publishes onto the handler's bus
-    // (fanned to subscribers by the listenRouter) is recorded here in one place — see recordBusEvent.
-    handler.bus.subscribe((event) => recordBusEvent(entry.name, event));
     return node;
   }
 
-  // Standalone compatibility only. The plugin never exposes this management plane.
-  if (policy.management !== false) {
-  r.get("/", (_req, res) => {
-    // no-store: always serve the latest shell, so editing the panel needs no gateway restart.
-    sendText(res, 200, adminHtml(), "text/html; charset=utf-8", { "Cache-Control": "no-store" });
-  });
-
-  // The panel's assets (styles/js ES modules), served from the same tree with the same freshness
-  // rule. Registered before the /:path MCP catch-all so it cannot swallow them.
-  r.get("/admin/*", (req, res) => {
-    const asset = adminAsset(req.path);
-    if (!asset) return sendJson(res, 404, { error: "not found" });
-    sendText(res, 200, asset.body, asset.type, { "Cache-Control": "no-store" });
-  });
-
+  // Liveness probes only. The plugin never exposes a management plane over
+  // HTTP — everything the dsh UI needs crosses the private IPC pipe instead.
   r.get("/health", (_req, res) => {
     sendJson(res, 200, { ok: true });
   });
@@ -197,13 +136,6 @@ export function buildApp(
     await registry.checkAll();
     sendJson(res, 200, { ok: true });
   });
-
-  if (store) mountAdminApi(r, registry, store, tokens, tokenEnv, tunnels?.manager);
-  // Registered before the /:path MCP catch-all, which would otherwise swallow /api/tunnels.
-  if (tunnels) {
-    mountTunnelApi(r, tunnels.store, tunnels.manager, makeAuthed(), registry);
-  }
-  }
 
   // DELETE: session teardown. Stateless → nothing to tear down; acknowledge so the client closes cleanly.
   // (No GET handler: on the 2026-07-28 protocol the gateway serves notifications through the client's
@@ -241,13 +173,10 @@ export function buildApp(
       jsonError(res, 503, `MCP '${name}' is not started (state: ${entry.lifecycle})`);
       return;
     }
-    const respText = captureResponse(res);
     try {
       await node(req, res, req.body);
-      recordTraffic(name, req.body, currentCallClient(), res.statusCode < 400, Date.now() - t0, respText());
       log("info", "request", { path: name, ms: Date.now() - t0 });
     } catch (err) {
-      recordTraffic(name, req.body, currentCallClient(), false, Date.now() - t0, respText());
       log("error", "request failed", { path: name, err: (err as Error).message });
       jsonError(res, 500, (err as Error).message);
     }

@@ -1,16 +1,21 @@
 /**
- * P3.7-P4 IPC surface e2e: mcp lifecycle + toggles + memory, tunnels CRUD
- * and port diagnostics — against the real engine child.
+ * P3.7 IPC surface e2e: mcp lifecycle + toggles + memory, def-hash instance
+ * sharing, and toggle persistence across instance changes — against the real
+ * engine child.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 process.env.MCP_GATEWAY_MASTER_KEY = 'ef'.repeat(32)
 
 const { createEngineSupervisor } = await import('../dist/runtime/engine-supervisor.js')
+
+/** The stdio echo fixture: a real spawned MCP that serves one tool named "echo". */
+const ECHO_FIXTURE = fileURLToPath(new URL('./engine/fixtures/stdio-echo.mjs', import.meta.url))
 
 async function withEngine(run) {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-domains-'))
@@ -34,13 +39,13 @@ test('mcp lifecycle + toggles + memory over IPC', async () => {
     assert.deepEqual(tools.disabledTools, [])
 
     // echo has no toggle (it serves one fixed tool and owns no set); every
-    // other adapter that serves tools has one now, proxies included. mysql is
-    // used here because it owns its set without connecting to anything.
-    const db = await sup.request('mcp.ensure', { name: 'dbt', def: { type: 'mysql', host: '127.0.0.1', user: 'u', password: 'p', database: 'd' }, start: false }, { timeoutMs: 30000 })
-    assert.equal(db.lifecycle, 'stopped')
-    const toggled = await sup.request('mcp.setToolEnabled', { name: 'dbt', tool: 'mysql_query', enabled: false }, { timeoutMs: 30000 })
+    // adapter that serves tools has one now, proxies included. A LAZY proc is
+    // used here because it owns its set without spawning anything.
+    const proc = await sup.request('mcp.ensure', { name: 'dbt', def: { type: 'proc', command: 'never-run', lazy: true }, start: false }, { timeoutMs: 30000 })
+    assert.equal(proc.lifecycle, 'idle')
+    const toggled = await sup.request('mcp.setToolEnabled', { name: 'dbt', tool: 'anything', enabled: false }, { timeoutMs: 30000 })
     assert.equal(toggled.enabled, false)
-    assert.deepEqual(toggled.disabledTools, ['mysql_query'])
+    assert.deepEqual(toggled.disabledTools, ['anything'])
     const unsupported = await sup.request('mcp.setToolEnabled', { name: 't1', tool: 'echo', enabled: false }, { timeoutMs: 30000 }).catch((e) => e.code)
     assert.equal(unsupported, 'E_INTERNAL', 'echo answers unsupported honestly')
 
@@ -53,47 +58,6 @@ test('mcp lifecycle + toggles + memory over IPC', async () => {
     assert.equal(started.lifecycle, 'started')
     const removed = await sup.request('mcp.remove', { name: 't1' }, { timeoutMs: 30000 })
     assert.equal(removed.removed, 't1')
-  })
-})
-
-test('tunnels CRUD + port diagnostics over IPC (masked secrets)', async () => {
-  await withEngine(async (sup) => {
-    const created = await sup.request('tunnels.upsertConnection', {
-      input: { name: 'bastion', host: '127.0.0.1', port: 22, username: 'u', authType: 'password', password: 'sekret' },
-    }, { timeoutMs: 30000 })
-    assert.equal(created.connection.name, 'bastion')
-    assert.equal(created.connection.password, '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022', 'secret masked on the way out')
-    const connId = created.connection.id
-
-    const list1 = await sup.request('tunnels.list', undefined, { timeoutMs: 30000 })
-    assert.equal(list1.connections.length, 1)
-    assert.equal(list1.connections[0].password, undefined, 'list DTOs carry no secret at all')
-
-    // sentinel round-trip: edit keeps the stored password
-    const updated = await sup.request('tunnels.upsertConnection', {
-      id: connId,
-      input: { name: 'bastion', host: '127.0.0.2', port: 22, username: 'u', authType: 'password', password: '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022' },
-    }, { timeoutMs: 30000 })
-    assert.equal(updated.connection.host, '127.0.0.2')
-    assert.equal(updated.connection.password, '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022')
-
-    const rule = await sup.request('tunnels.upsertRule', {
-      input: { name: 'db', connectionId: connId, localPort: 15432, targetHost: 'db', targetPort: 5432 },
-    }, { timeoutMs: 30000 })
-    assert.ok(rule.rule.id, 'rule created with allocated id')
-    const badRule = await sup.request('tunnels.upsertRule', {
-      input: { name: 'bad', connectionId: connId, localPort: 0, targetHost: 'x', targetPort: 1 },
-    }, { timeoutMs: 30000 }).catch((e) => e.message)
-    assert.ok(String(badRule).includes('port'), 'invalid port refused')
-
-    const deleted = await sup.request('tunnels.deleteRule', { id: rule.rule.id }, { timeoutMs: 30000 })
-    assert.equal(deleted.deleted, rule.rule.id)
-    // connection still has no rules; delete succeeds
-    const delConn = await sup.request('tunnels.deleteConnection', { id: connId }, { timeoutMs: 30000 })
-    assert.equal(delConn.deleted, connId)
-
-    const port = await sup.request('tunnels.port', { port: 19999 }, { timeoutMs: 30000 })
-    assert.equal(typeof port.free, 'boolean')
   })
 })
 
@@ -129,11 +93,11 @@ test('mcp.ensure still separates definitions that differ at all', async () => {
   await withEngine(async (sup) => {
     // The def hash is the isolation — a per-project override or another API key
     // hashes differently and keeps an instance of its own. Sharing must never
-    // reach across that.
-    const a = await sup.request('mcp.ensure', { name: 'left', def: { type: 'mysql', host: '127.0.0.1', user: 'u', password: 'p', database: 'one' }, start: false }, { timeoutMs: 30000 })
-    const b = await sup.request('mcp.ensure', { name: 'right', def: { type: 'mysql', host: '127.0.0.1', user: 'u', password: 'p', database: 'two' }, start: false }, { timeoutMs: 30000 })
+    // reach across that. Lazy procs never spawn, so the difference is pure.
+    const a = await sup.request('mcp.ensure', { name: 'left', def: { type: 'proc', command: 'never-run', lazy: true, env: { WHICH: 'one' } }, start: false }, { timeoutMs: 30000 })
+    const b = await sup.request('mcp.ensure', { name: 'right', def: { type: 'proc', command: 'never-run', lazy: true, env: { WHICH: 'two' } }, start: false }, { timeoutMs: 30000 })
     assert.equal(a.name, 'left')
-    assert.equal(b.name, 'right', 'a different database is a different server')
+    assert.equal(b.name, 'right', 'a different environment is a different server')
     assert.equal(b.reused, undefined)
   })
 })
@@ -144,15 +108,20 @@ test('a tool turned off stays off when the entry is re-hosted under a new instan
     // instance carries a hash of the definition: editing the server (or simply
     // restarting into a differently-minted name) silently switched every tool
     // back on.
-    const one = 'saaaaaaaaaa-1111111111-dbt'
-    const two = 'saaaaaaaaaa-2222222222-dbt' // same entry, next generation
-    await sup.request('mcp.ensure', { name: one, def: { type: 'mysql', host: '127.0.0.1', user: 'u', password: 'p', database: 'd' }, start: false }, { timeoutMs: 30000 })
-    const off = await sup.request('mcp.setToolEnabled', { name: one, tool: 'mysql_query', enabled: false }, { timeoutMs: 30000 })
-    assert.deepEqual(off.disabledTools, ['mysql_query'])
+    const one = 'saaaaaaaaaa-1111111111-echot'
+    const two = 'saaaaaaaaaa-2222222222-echot' // same entry, next generation
+    // Native proc defs carry the FULL command line in `command` (standardToNative
+    // joins .mcp.json command+args this way; tokenizeCommand splits it back).
+    const base = { type: 'proc', command: 'node "' + ECHO_FIXTURE + '"' }
+    await sup.request('mcp.ensure', { name: one, def: base, start: false }, { timeoutMs: 30000 })
+    const off = await sup.request('mcp.setToolEnabled', { name: one, tool: 'echo', enabled: false }, { timeoutMs: 30000 })
+    assert.deepEqual(off.disabledTools, ['echo'])
 
-    await sup.request('mcp.ensure', { name: two, def: { type: 'mysql', host: '127.0.0.1', user: 'u', password: 'p', database: 'other' }, start: true }, { timeoutMs: 30000 })
-    const listed = await sup.request('mcp.tools', { name: two }, { timeoutMs: 30000 })
-    assert.deepEqual(listed.disabledTools, ['mysql_query'], 'the new instance came up with what the user had turned off')
-    assert.ok(!listed.tools.some((t) => t.name === 'mysql_query'), 'and it is not served')
+    // An edited definition (a bumped description) is a NEW instance of the
+    // SAME entry — the toggle was filed under the entry, so it must ride over.
+    await sup.request('mcp.ensure', { name: two, def: { ...base, description: 'v2' }, start: true }, { timeoutMs: 120000 })
+    const listed = await sup.request('mcp.tools', { name: two }, { timeoutMs: 120000 })
+    assert.deepEqual(listed.disabledTools, ['echo'], 'the new instance came up with what the user had turned off')
+    assert.ok(!listed.tools.some((t) => t.name === 'echo'), 'and it is not served')
   })
 })

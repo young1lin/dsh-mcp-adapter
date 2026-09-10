@@ -37,8 +37,6 @@ async function main(): Promise<void> {
     publicMcp: process.env.DSH_MCP_PUBLIC === "1",
     publicNames: JSON.parse(process.env.DSH_MCP_PUBLIC_NAMES ?? "[]") as string[],
     seedFirstRun: true,        // the plugin's engine dir is first-run seeded
-    reapOrphans: false,        // the host owns child-process hygiene
-    importForwardPortOnFresh: false, // legacy import is an explicit P6 action
   })
 
   const version = await readVersion()

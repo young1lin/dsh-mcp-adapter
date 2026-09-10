@@ -2,15 +2,15 @@
  * The embeddable Engine: local-mcp-gateway's runtime core behind an explicit
  * start()/dispose() lifecycle, with every process-level side effect left OUT.
  *
- * What the standalone entry (./index.ts) adds on top — and what a host embedding
- * this module must therefore own itself — is exactly the process-global set:
+ * What a host embedding this module must own itself is exactly the
+ * process-global set:
  *   - process.env.PATH login-path repair (see pathenv.ts; a host plugin usually
- *     inherits a sane PATH already),
+ *     inherits a sane PATH already — proc.ts repairs it per spawn),
  *   - SIGINT/SIGTERM handlers + process.exit sequencing,
- *   - the boot-time orphan-proc sweep and proc-pid ledger (opt-in here via
- *     `reapOrphans`, so a host that owns its children can skip the sweep),
- *   - first-run seeding of the data dir (`seedFirstRun` default false: the dsh
- *     plugin manages its own storage; the standalone gateway keeps it true).
+ *   - child-process hygiene: the host supervisor tree-kills the engine (and
+ *     with it every hosted MCP) and keeps its own engine-orphan ledger,
+ *   - first-run seeding of the data dir (`seedFirstRun` default false; the
+ *     plugin's ipc-main.ts entry opts in for its private engine dir).
  *
  * Importing this module has NO process side effects: the adapter-factory
  * registrations in ./adapters/factory.ts are in-memory and idempotent, and
@@ -23,18 +23,10 @@ import { buildApp } from "./router.js";
 import { loadConfig } from "./config.js";
 import { log } from "./log.js";
 import { flushCalls, startCallRetention } from "./calls.js";
-import { flushTraffic, initTrafficLog } from "./traffic.js";
 import { Registry, isLazy } from "./registry.js";
 import { ManagedStore, loadManagedToken } from "./managed.js";
 import { TokenManager } from "./token.js";
 import { makeAdapter } from "./adapters/factory.js";
-import { killOrphanMcps } from "./process-tree.js";
-import { setProcPidFile, reapProcPids } from "./proc-pids.js";
-import { otherGatewayAlive } from "./process-tree.js";
-import { TunnelStore } from "./tunnels/store.js";
-import { TunnelManager } from "./tunnels/manager.js";
-import { registryView } from "./tunnels/mcpmatch.js";
-import { importForwardPort } from "./tunnels/import.js";
 import { ensureFirstRun } from "./bootstrap.js";
 import { dataPath } from "./datadir.js";
 import { logicalKeyOf } from "../shared/instance-name.js";
@@ -49,12 +41,8 @@ export interface EngineOptions {
   publicNames?: string[];
   /** Listen port override (MCP_GATEWAY_PORT / config file resolution otherwise). */
   port?: number;
-  /** Run the boot orphan sweep + pid ledger (standalone behavior). Default false. */
-  reapOrphans?: boolean;
   /** Seed the data dir on first run (standalone behavior). Default false. */
   seedFirstRun?: boolean;
-  /** Adopt a forward-port config when tunnels.json is fresh (standalone behavior). Default false. */
-  importForwardPortOnFresh?: boolean;
   /** Hard cap on the whole dispose sequence; a wedged driver rejects instead of exiting. */
   disposeTimeoutMs?: number;
 }
@@ -66,18 +54,14 @@ export interface Engine {
   readonly registry: Registry;
   readonly store: ManagedStore;
   readonly tokens: TokenManager;
-  readonly tunnels: TunnelManager;
-  /** The tunnel DEFINITION store the manager runs on (defs, groups, order). */
-  readonly tunnelStore: TunnelStore;
   readonly server: HttpServer;
   /** Graceful shutdown. Rejects when the sequence exceeds disposeTimeoutMs. */
   dispose(): Promise<void>;
 }
 
 /**
- * Build and start one engine. Mirrors the standalone boot sequence exactly
- * (tunnels before MCPs, overrides applied, lazy entries idle, retention armed)
- * minus the process-global effects documented on the module.
+ * Build and start one engine (overrides applied, lazy entries idle, retention
+ * armed) minus the process-global effects documented on the module.
  * @param options - lifecycle knobs.
  * @returns the running engine handle.
  * @throws when the config is unusable or the listener cannot bind.
@@ -87,34 +71,8 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
   const cfg = loadConfig();
   const port = options.port ?? cfg.port;
 
-  if (options.reapOrphans === true) {
-    setProcPidFile(dataPath(`.proc-pids-${port}.json`));
-    await reapProcPids(process.pid);
-    if (Object.values(cfg.servers).some((s) => s.type === "proc")) {
-      if (await otherGatewayAlive(process.pid)) {
-        log("warn", "another gateway instance is running — skipping the orphan command sweep", {});
-      } else {
-        await killOrphanMcps(process.pid);
-      }
-    }
-  }
-
   const registry = new Registry(15000);
   const store = new ManagedStore(dataPath("managed.json"));
-
-  const tunnelStore = new TunnelStore(dataPath("tunnels.json"), port);
-  if (options.importForwardPortOnFresh === true && tunnelStore.isFresh()) {
-    try {
-      const imported = importForwardPort(tunnelStore);
-      if (imported) log("info", "imported forward-port tunnels on first run", { rules: imported.rules, connections: imported.connections });
-    } catch (err) {
-      log("warn", "forward-port import failed", { err: (err as Error).message });
-    }
-  }
-  const tunnels = new TunnelManager(tunnelStore, { mcps: registryView(registry) });
-  for (const r of await tunnels.startEnabled()) {
-    if (!r.ok) log("warn", "tunnel autostart failed", { rule: r.name, err: r.error });
-  }
 
   for (const [name, def] of Object.entries(options.privateMode ? {} : cfg.servers)) {
     try {
@@ -170,12 +128,9 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
   registry.startTimer();
 
   const tokens = new TokenManager(store, loadManagedToken(dataPath("managed.json")) ?? cfg.token);
-  await initTrafficLog();
 
-  const app = buildApp(registry, tokens, store, cfg.tokenEnv, {
-    store: tunnelStore,
-    manager: tunnels,
-  }, options.privateMode ? { management: false, publicNames: new Set(options.publicNames ?? []) } : {});
+  const app = buildApp(registry, tokens, cfg.tokenEnv,
+    options.privateMode ? { publicNames: new Set(options.publicNames ?? []) } : {});
   const httpServer = app;
   const listening = !options.privateMode || options.publicMcp === true;
   if (listening) {
@@ -219,10 +174,8 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
       (async () => {
         if (httpServer.listening) httpServer.close();
         httpServer.closeAllConnections();
-        await tunnels.closeAll();
         await registry.closeAll();
         await flushCalls();
-        await flushTraffic();
       })(),
       guard,
     ]).catch((err) => {
@@ -237,8 +190,6 @@ export async function createEngine(options: EngineOptions = {}): Promise<Engine>
     registry,
     store,
     tokens,
-    tunnels,
-    tunnelStore,
     server: httpServer,
     dispose,
   };

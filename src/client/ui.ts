@@ -120,13 +120,6 @@ textarea.mmc-input{width:100%;min-height:110px;font-family:var(--ds-font-family-
 .mmc-hint{color:var(--mmc-fg3);font-size:11px;overflow-wrap:anywhere}
 .mmc-hint[data-clamp]{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
 .mmc-check{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mmc-fg);cursor:pointer}
-.mmc-scroll{overflow:auto;max-height:340px;border:1px solid var(--mmc-line);border-radius:10px;min-width:0}
-.mmc-table{border-collapse:collapse;font-size:12px;width:max-content;min-width:100%}
-.mmc-table th,.mmc-table td{padding:6px 12px;text-align:left;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;box-shadow:inset 0 -1px 0 var(--mmc-hair)}
-.mmc-table th{position:sticky;top:0;background:var(--mmc-bg);font-weight:500;color:var(--mmc-fg3);cursor:pointer;z-index:1;box-shadow:inset 0 -1px 0 var(--mmc-line)}
-.mmc-table th[data-sorted]{color:var(--mmc-fg)}
-.mmc-table tbody tr:hover{background:var(--mmc-fill)}
-.mmc-table td[data-null]{color:var(--mmc-fg3);font-style:italic}
 `
 
 /**

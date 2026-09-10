@@ -8,10 +8,9 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { expandHome } from './shared.js'
-import { resolveGatewayConfig, type GatewayConfig } from './gateway.js'
 
 /** Adapter config keys; validated by hand in 'validateConfig'. */
-const CONFIG_KEYS = new Set(['project', 'projectRoot', 'globalFile', 'projectFile', 'projectFiles', 'disable', 'failOnStartupError', 'toolCallTimeoutMs', 'watch', 'gateway', 'engine'])
+const CONFIG_KEYS = new Set(['project', 'projectRoot', 'globalFile', 'projectFile', 'projectFiles', 'disable', 'failOnStartupError', 'toolCallTimeoutMs', 'watch', 'engine'])
 
 /** The plugin-owned engine block: spawns dist/engine/ipc-main.js under this plugin. */
 export interface EngineEmbedConfig {
@@ -52,7 +51,6 @@ export interface ResolvedConfig {
   disable: Set<string>
   failOnStartupError: boolean
   watch: boolean
-  gateway: GatewayConfig | null
   engine: EngineEmbedConfig | null
   toolCallTimeoutMs?: number
 }
@@ -69,6 +67,9 @@ export function validateConfig(raw: unknown): ResolvedConfig {
     throw new Error('mcp-json-adapter: config must be an object')
   }
   for (const key of Object.keys(config as Record<string, unknown>)) {
+    // The mcp-only build dropped the discovery layer; say so instead of the
+    // generic unknown-key message, because old patch entries still carry it.
+    if (key === 'gateway') throw new Error('mcp-json-adapter: the "gateway" discovery block was removed in the mcp-only build — mount servers via .mcp.json layers or the panel instead')
     if (!CONFIG_KEYS.has(key)) throw new Error('mcp-json-adapter: unknown config key "' + key + '"')
   }
   const cfg = config as Record<string, unknown>
@@ -121,7 +122,6 @@ export function validateConfig(raw: unknown): ResolvedConfig {
   if (typeof doWatch !== 'boolean') {
     throw new Error('mcp-json-adapter: watch must be a boolean')
   }
-  const gateway = resolveGatewayConfig(cfg.gateway)
   let engine: EngineEmbedConfig | null = null
   if (cfg.engine !== undefined && cfg.engine !== false) {
     const block = cfg.engine === true ? {} : cfg.engine
@@ -169,7 +169,6 @@ export function validateConfig(raw: unknown): ResolvedConfig {
     disable: new Set(disable as string[]),
     failOnStartupError: failOnStartupError as boolean,
     watch: doWatch as boolean,
-    gateway,
     engine,
     ...(toolCallTimeoutMs !== undefined ? { toolCallTimeoutMs } : {}),
   }

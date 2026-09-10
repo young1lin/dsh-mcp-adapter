@@ -3,17 +3,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir, dataPath } from "./datadir.js";
 import { chmodPrivate, mkdirPrivate } from "./privfs.js";
-import { skillDir } from "./skilldir.js";
 import { readSecureJson, writeSecureJson } from "./secure/statefile.js";
 import { envStorePath, parseEnvText, readEnvStore, setEnvDefault, writeEnvStore } from "./secure/envstore.js";
 import { DEFAULT_PORT, asListenPort, envListenPort } from "./port.js";
 
 /**
- * The minimal config seeded on first run: one 'echo' MCP so the panel has a working endpoint
- * before any database is configured, and nothing else. The richer 'gateway.config.example.json'
- * stays shipped for manual cp use (the README points at it); a zero-config first run wants no
- * row of "down" database templates the user never asked for. The skill carries the database
- * examples instead, where they are actually useful.
+ * The minimal config seeded on first run: one 'echo' MCP so the panel has a
+ * working endpoint before anything else is configured, and nothing else. The
+ * richer 'gateway.config.example.json' stays shipped for manual cp use; a
+ * zero-config first run wants no row of "down" templates the user never
+ * asked for.
  *
  * Everything this file writes is SEALED on arrival (see secure/statefile.ts): the seed config,
  * the env store holding the token, and any migrated repo-local state. A plaintext file dropped
@@ -32,9 +31,6 @@ function seedConfig() {
     },
   };
 }
-
-/** The skill's location in the package (see src/skilldir.ts, which cli.ts shares). */
-const SKILL_PATH = join(skillDir(), "SKILL.md");
 
 /** What the run that just bootstrapped should tell the operator (secrets only on the run that
  *  created them, so a restart never re-prints a token into a log). */
@@ -129,7 +125,7 @@ export function ensureFirstRun(): FirstRunReport {
     : undefined;
 
   chmodPrivate(dir, true);
-  for (const f of ["env.json", "master.key", "managed.json", "tunnels.json", "gateway.config.json"]) {
+  for (const f of ["env.json", "master.key", "managed.json", "gateway.config.json"]) {
     chmodPrivate(dataPath(f));
   }
 
@@ -157,6 +153,5 @@ function printReport(r: FirstRunReport): void {
   }
   if (r.newToken) console.log("  token:              lmg creds (the panel itself has no login)");
   console.log("  panel:              " + panelUrl());
-  console.log("  skill:              " + SKILL_PATH);
   console.log("");
 }

@@ -2,13 +2,9 @@
  * Child side of the host<->engine IPC protocol: a method table over the
  * framed stdio channel (see ../shared/ipc-protocol.ts). The engine exposes
  * ONLY this surface to its parent — the loopback HTTP listener serves MCP
- * endpoints and (in compat mode) the legacy admin API, never management for
- * the dsh UI, which the host proxies through here.
- *
- * P1 ships the lifecycle core (ping / status / shutdown); the domain methods
- * (config merge, session tools, tunnels, observability) join the same table
- * in P3/P4 — one dispatch, one validation seam, one place where secrets are
- * kept out of logs.
+ * endpoints and health probes, never management for the dsh UI, which the
+ * host proxies through here. One dispatch, one validation seam, one place
+ * where secrets are kept out of logs.
  *
  * @module dsh-mcp-adapter/engine/ipc-service
  */
@@ -16,8 +12,6 @@
 import type { Engine } from "./engine-main.js";
 import { ADMIN_METHODS } from "./ipc-admin.js";
 import { makeAdapter } from "./adapters/factory.js";
-import { maskDef, unmaskBody } from "./mask.js";
-import { probePort, portOwner, forceFree } from "./tunnels/port.js";
 import { openSession } from "./introspect.js";
 import { listPage, newPageCache, PAGE_SIZE } from "./paging.js";
 import { withCallSource } from "./calls.js";
@@ -58,7 +52,6 @@ const METHODS: Record<string, IpcMethod> = {
     port: engine.port,
     host: engine.host,
     mcps: engine.registry.status(),
-    tunnelRules: engine.tunnels.rows().rules.length,
     tokens: engine.tokens.list().length,
   }),
   /** The default bearer the private engine seeded; crosses only the parent pipe. */
@@ -353,130 +346,10 @@ const METHODS: Record<string, IpcMethod> = {
       reason: e.lifecycle === "error" ? e.error : e.lastError,
       logs: e.adapter.logs?.() ?? "",
       pids: e.adapter.pids?.() ?? [],
-      tunnels: engine.tunnels.tunnelsForMcp(name),
     }
   },
 
-  // --- tunnel domain (P4): mirrors src/engine/tunnels/api.ts semantics -----
-
-  "tunnels.list": async (engine) => {
-    const rows = engine.tunnels.rows()
-    return { connections: rows.connections, rules: rows.rules, mcps: engine.registry.names() }
-  },
-
-  "tunnels.upsertConnection": async (engine, params) => {
-    const p = params as { id?: unknown; input?: unknown }
-    const input = (p.input ?? {}) as Record<string, unknown>
-    if (p.id === undefined || p.id === null || String(p.id).length === 0) {
-      const added = tunnelStoreOf(engine).addConnection(input as never)
-      return { connection: maskDef(added as never) }
-    }
-    const id = String(p.id)
-    const current = tunnelStoreOf(engine).connection(id)
-    if (current === undefined) throw new Error("unknown SSH connection: " + id)
-    const restored = unmaskBody(input, current as never) as never
-    const updated = await engine.tunnels.applyConnectionUpdate(id, restored)
-    return { connection: maskDef(updated as never) }
-  },
-
-  "tunnels.deleteConnection": async (engine, params) => {
-    const id = String((params as { id?: unknown })?.id ?? "")
-    await engine.tunnels.deleteConnection(id)
-    return { deleted: id }
-  },
-
-  "tunnels.testConnection": async (engine, params) => {
-    const id = String((params as { id?: unknown })?.id ?? "")
-    return await engine.tunnels.testConnection(id)
-  },
-
-  "tunnels.trustHostKey": async (engine, params) => {
-    const id = String((params as { id?: unknown })?.id ?? "")
-    return { id, hostKey: engine.tunnels.trustHostKey(id) ?? null }
-  },
-
-  "tunnels.upsertRule": async (engine, params) => {
-    const p = params as { id?: unknown; input?: unknown; start?: unknown }
-    const input = (p.input ?? {}) as Record<string, unknown>
-    if (p.id === undefined || p.id === null || String(p.id).length === 0) {
-      const rule = tunnelStoreOf(engine).addRule(input as never)
-      if (p.start === true) await engine.tunnels.startRule(rule.id).catch(() => undefined)
-      return { rule: engine.tunnels.rows().rules.find((r) => r.id === rule.id) }
-    }
-    const id = String(p.id)
-    const updated = await engine.tunnels.applyRuleUpdate(id, input as never)
-    return { rule: engine.tunnels.rows().rules.find((r) => r.id === updated.id) }
-  },
-
-  "tunnels.deleteRule": async (engine, params) => {
-    const p = params as { id?: unknown; force?: unknown }
-    await engine.tunnels.deleteRule(String(p.id ?? ""), p.force === true)
-    return { deleted: String(p.id ?? "") }
-  },
-
-  "tunnels.startRule": async (engine, params) => {
-    const id = String((params as { id?: unknown })?.id ?? "")
-    try {
-      await engine.tunnels.startRule(id)
-    } catch (error) {
-      const row = engine.tunnels.rows().rules.find((r) => r.id === id)
-      if (row === undefined) throw error
-      return { rule: row, ok: false, error: (error as Error).message }
-    }
-    return { rule: engine.tunnels.rows().rules.find((r) => r.id === id), ok: true }
-  },
-
-  "tunnels.stopRule": async (engine, params) => {
-    const p = params as { id?: unknown; force?: unknown }
-    const id = String(p.id ?? "")
-    await engine.tunnels.stopRule(id, { force: p.force === true })
-    return { rule: engine.tunnels.rows().rules.find((r) => r.id === id) }
-  },
-
-  "tunnels.stopAll": async (engine, params) => {
-    const force = (params as { force?: unknown })?.force === true
-    return { results: await engine.tunnels.stopAll(force) }
-  },
-
-  /** Groups for one list ("rules" | "connections"): whole-list replace. */
-  "tunnels.groups": async (engine, params) => {
-    const p = (params ?? {}) as { kind?: unknown; groups?: unknown }
-    const kind = p.kind === "connections" ? "connections" : "rules"
-    if (!Array.isArray(p.groups)) return { groups: tunnelStoreOf(engine).groupsOf(kind) }
-    return { groups: tunnelStoreOf(engine).setGroups(kind, p.groups) }
-  },
-
-  /** Impose a full order on one or both lists (array-of-ids per list). */
-  "tunnels.order": async (engine, params) => {
-    const p = (params ?? {}) as { connections?: unknown; rules?: unknown }
-    const store = tunnelStoreOf(engine)
-    if (Array.isArray(p.connections)) store.reorder("connections", p.connections)
-    if (Array.isArray(p.rules)) store.reorder("rules", p.rules)
-    return { connections: store.connections().map((c) => c.id), rules: store.rules().map((r) => r.id) }
-  },
-
-  "tunnels.port": async (_engine, params) => {
-    const port = Number((params as { port?: unknown })?.port)
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid port")
-    const free = await probePort(port)
-    return { port, free, owner: free ? null : await portOwner(port) }
-  },
-
-  "tunnels.portFree": async (_engine, params) => {
-    const port = Number((params as { port?: unknown })?.port)
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid port")
-    const owner = await portOwner(port)
-    if (owner === null) throw new Error("nothing is listening on port " + String(port))
-    await forceFree(owner.pid)
-    return { port, killed: owner }
-  },
 }
-
-/** The engine's tunnel store handle (manager owns runtime; store owns defs). */
-function tunnelStoreOf(engine: Engine): import("./tunnels/store.js").TunnelStore {
-  return engine.tunnelStore
-}
-
 /** Build one lifecycle verb method against the registry + store. */
 function lifecycle(verb: "start" | "stop" | "restart"): IpcMethod {
   return async (engine, params) => {

@@ -127,10 +127,8 @@ test('api: scope ids ride the query string; tokens use the right verbs and paths
   assert.equal(calls[2].method, 'DELETE')
   await apiMod.api.tokenRotate('t1')
   assert.equal(calls[3].url, '/tokens/t1/rotate')
-  await apiMod.api.traffic({ mcp: 'alpha', actionsOnly: true, page: 2 })
-  assert.equal(calls[4].url, '/traffic?mcp=alpha&actions=1&page=2')
   await apiMod.api.mcpCalls('alpha', 3)
-  assert.equal(calls[5].url, '/mcp/alpha/calls?page=3')
+  assert.equal(calls[4].url, '/mcp/alpha/calls?page=3')
   assert.equal(apiMod.isNoRoute({ message: 'no route for GET /tokens' }), true)
   assert.equal(apiMod.isNoRoute({ message: 'other' }), false)
 })
@@ -350,7 +348,7 @@ async function loadClient(mini, ctxExtra = {}) {
   return { registrations }
 }
 
-test('pages: tab switches across all five panes never change one component hook count', { skip: bundleSkipped }, async () => {
+test('pages: tab switches across both panes never change one component hook count', { skip: bundleSkipped }, async () => {
   const mini = makeMiniReact()
   stubFetch((call) => {
     if (call.url.startsWith('/preview')) return { status: 200, json: previewDoc() }
@@ -363,7 +361,7 @@ test('pages: tab switches across all five panes never change one component hook 
   mini.render(mini.createElement(section.component, { t: (key) => key }))
   await flush()
   assert.ok(findText(mini, 'alpha'), 'workbench lists entries')
-  for (const label of ['dataTitle', 'trafficTitle', 'tunnels', 'advanced', 'entries']) {
+  for (const label of ['advanced', 'entries']) {
     await clickButton(mini, label)   // must not throw a HOOK ORDER VIOLATION
     assert.equal(mini.renderError(), null, 'no render error on tab ' + label)
   }
@@ -501,20 +499,10 @@ test('pages (wired bridge): every pane renders REAL data end-to-end — no bridg
     if (url.startsWith('/engine')) return { status: 200, json: { off: true } }
     if (url.startsWith('/workspaces')) return { status: 200, json: { items: [{ id: 'ws1', path: 'C:/ws/one' }] } }
     if (url.startsWith('/session')) return { status: 200, json: { sessionId: 'sess-1', revision: 'r', snapshot: { revision: 's', registeredAt: 'R-AT', tools: ['mcp__alpha__query'] } } }
-    if (url.startsWith('/tunnels')) {
-      return { status: 200, json: { connections: [{ id: 'c1', name: 'ssh1', host: 'h', port: 22, username: 'u', authType: 'key', state: 'disconnected', ruleCount: 0, activeRules: 0 }], rules: [] } }
-    }
     if (url.startsWith('/memory')) return { status: 200, json: { gatewayMb: 12 } }
-    if (url.startsWith('/traffic/')) return { status: 200, json: { entry: { seq: 7, body: 'BODY7' } } }
-    if (url.startsWith('/traffic')) return { status: 200, json: { rows: [{ seq: 1, ts: 'TS', mcp: 'alpha', client: 'cli-1', method: 'tools/call', ok: true, preview: 'PV' }], total: 1, page: 0, clients: ['cli-1'] } }
-    if (url.startsWith('/data/db1/tables')) return { status: 200, json: { tables: [{ name: 'users', rows: 42 }], total: 1, page: 0 } }
-    if (url.startsWith('/data/db1/data')) return { status: 200, json: { columns: [{ name: 'id', type: 'int' }], rows: [{ id: 7 }], total: 1, offset: 0, limit: 50, editable: false } }
-    if (url.startsWith('/data/db1/query')) return { status: 200, json: { columns: [{ name: 'id' }], rows: [{ id: 7 }], truncated: false } }
-    if (url.startsWith('/data')) return { status: 200, json: { connections: [{ name: 'db1', dialect: 'mysql', label: 'l', readonly: false, state: 'started', editable: true }] } }
+    if (url.startsWith('/listener')) return { status: 200, json: { enabled: false, port: 0, locked: false } }
     if (url.startsWith('/tokens/t1/secret')) return { status: 200, json: { id: 't1', label: 'l', secret: 'SEC' } }
     if (url.startsWith('/tokens')) return { status: 200, json: { tokens: [{ id: 'default', label: 'default', createdAt: 'C-AT' }], tokenEnv: 'MCP_GATEWAY_TOKEN' } }
-    if (url.startsWith('/env')) return { status: 200, json: { vars: [{ name: 'MY_VAR' }] } }
-    if (url.startsWith('/backup/export')) return { status: 200, json: { version: 1, generatedAt: 'BK-AT', payload: { global: {} } } }
     if (/^\/mcp\/alpha\/calls\//.test(url)) return { status: 200, json: { call: { seq: 9, tool: 'x', output: 'FULL' } } }
     if (/^\/mcp\/alpha\/calls/.test(url)) return { status: 200, json: { name: 'alpha', calls: [{ seq: 9, ts: 'TS', tool: 'query', preview: 'PV' }], page: 0, more: false } }
     if (/^\/mcp\/alpha\/(status|tools|resources|prompts)/.test(url)) return { status: 200, json: { lifecycle: 'started', state: 'up', type: 'proc', tools: [{ name: 'query', description: 'd' }] } }
@@ -527,33 +515,10 @@ test('pages (wired bridge): every pane renders REAL data end-to-end — no bridg
   await flush()
   assert.ok(findText(mini, 'alpha'), 'workbench entries render')
 
-  // traffic pane: rows + client chips, no pending notice
-  await clickButton(mini, 'trafficTitle')
-  assert.ok(findText(mini, 'tools/call'), 'traffic row method shown')
-  assert.ok(findText(mini, 'cli-1'), 'traffic client shown')
-  assert.ok(!findText(mini, 'bridgePending'), 'traffic pane fully wired')
-
-  // data pane: connection -> tables -> grid
-  await clickButton(mini, 'dataTitle')
-  assert.ok(findText(mini, 'db1'), 'data connection listed')
-  assert.ok(!findText(mini, 'bridgePending'), 'data pane fully wired')
-  // The row IS the open affordance now — there is no separate Browse button.
-  await clickButton(mini, 'db1')
-  assert.ok(findText(mini, 'users'), 'table list shown')
-  await clickButton(mini, 'users')
-  assert.ok(findText(mini, 'id'), 'grid column shown')
-
-  // advanced pane: tokens + env + backup export all wired
+  // advanced pane: tokens + the MCP endpoint switch all wired
   await clickButton(mini, 'advanced')
   assert.ok(findText(mini, 'default'), 'token row shown')
-  assert.ok(findText(mini, 'MY_VAR'), 'env var shown')
   assert.ok(!findText(mini, 'bridgePending'), 'advanced pane fully wired')
-  await clickButton(mini, 'backupExport')
-  assert.ok(findText(mini, 'BK-AT'), 'backup document shown')
-
-  // tunnels pane: connection row
-  await clickButton(mini, 'tunnels')
-  assert.ok(findText(mini, 'ssh1'), 'tunnel connection shown')
 
   // MCP pane: detail with lifecycle buttons + a populated calls tab
   await clickButton(mini, 'entries')
@@ -894,28 +859,28 @@ test('pages (display): MCP status labels are translated and the panel opens unde
 
 test('fields: the schema round-trips a definition without inventing or losing keys', async () => {
   const f = await import('../src/client/fields.ts')
-  // A native layer offers the drivers; a standard .mcp.json cannot hold them.
+  // A native layer offers the adapters; a standard .mcp.json cannot hold them.
   assert.deepEqual(f.typesFor('global:standard'), ['stdio', 'remote'])
-  assert.ok(f.typesFor('project:native').includes('mysql'), 'native layers offer the in-process drivers')
-  assert.ok(f.typesFor('global:native').includes('redis'))
+  assert.ok(f.typesFor('project:native').includes('http'), 'native layers offer the engine adapters')
+  assert.ok(f.typesFor('global:native').includes('proc'))
   // Standard entries have no `type` key — the SHAPE is the type, because
   // .mcp.json is shared with other MCP clients and a dsh-only discriminator
   // in it is pollution.
   assert.equal(f.typeOfDef({ command: 'npx' }, 'global:standard'), 'stdio')
   assert.equal(f.typeOfDef({ url: 'https://x/mcp' }, 'global:standard'), 'remote')
   assert.equal(f.blankDef('stdio').type, undefined, 'a standard draft never carries a type key')
-  assert.deepEqual(f.blankDef('mysql'), { type: 'mysql' })
+  assert.deepEqual(f.blankDef('http'), { type: 'http' })
 
-  const port = f.fieldsFor('mysql').find((x) => x.k === 'port')
-  const readonly = f.fieldsFor('mysql').find((x) => x.k === 'readonly')
+  const timeout = f.fieldsFor('proc').find((x) => x.k === 'timeoutMs')
+  const expose = f.fieldsFor('proc').find((x) => x.k === 'exposeResources')
   // Numbers are stored as numbers; clearing a field REMOVES the key rather
   // than storing "".
-  assert.deepEqual(f.applyField({ type: 'mysql' }, port, '3306'), { type: 'mysql', port: 3306 })
-  assert.deepEqual(f.applyField({ type: 'mysql', port: 3306 }, port, ''), { type: 'mysql' })
-  assert.throws(() => f.applyField({}, port, 'not-a-port'), /not a number/)
+  assert.deepEqual(f.applyField({ type: 'proc' }, timeout, '180000'), { type: 'proc', timeoutMs: 180000 })
+  assert.deepEqual(f.applyField({ type: 'proc', timeoutMs: 180000 }, timeout, ''), { type: 'proc' })
+  assert.throws(() => f.applyField({}, timeout, 'not-a-number'), /not a number/)
   // A boolean equal to its default is left out, so the stored file stays minimal.
-  assert.deepEqual(f.applyField({ type: 'mysql' }, readonly, false), { type: 'mysql' })
-  assert.deepEqual(f.applyField({ type: 'mysql' }, readonly, true), { type: 'mysql', readonly: true })
+  assert.deepEqual(f.applyField({ type: 'proc' }, expose, true), { type: 'proc' })
+  assert.deepEqual(f.applyField({ type: 'proc' }, expose, false), { type: 'proc', exposeResources: false })
 
   // KEY=VALUE and one-per-line blocks parse into the shapes the engine reads.
   const env = f.fieldsFor('stdio').find((x) => x.k === 'env')
@@ -923,23 +888,23 @@ test('fields: the schema round-trips a definition without inventing or losing ke
   assert.deepEqual(f.applyField({}, env, 'A=1\n\nB = two '), { env: { A: '1', B: 'two' } })
   assert.deepEqual(f.applyField({}, args, '-y\n@scope/pkg\n'), { args: ['-y', '@scope/pkg'] })
   assert.equal(f.fieldValue({ env: { A: '1' } }, env), 'A=1')
-  assert.equal(f.fieldValue({}, readonly), false, 'an unset boolean reads as its default')
+  assert.equal(f.fieldValue({}, expose), true, 'an unset boolean reads as its default')
 
   // THE round-trip guarantee: a key the form does not model survives an edit
   // through the form, and is reported rather than silently dropped.
-  const exotic = { type: 'mysql', host: 'h', idleMs: 60000, weird: { deep: true } }
-  assert.deepEqual(f.unknownKeys(exotic, 'mysql'), ['idleMs', 'weird'])
+  const exotic = { type: 'proc', command: 'npx -y pkg', idleMs: 60000, weird: { deep: true } }
+  assert.deepEqual(f.unknownKeys(exotic, 'proc'), ['idleMs', 'weird'])
   assert.deepEqual(
-    f.applyField(exotic, port, '3307'),
-    { type: 'mysql', host: 'h', idleMs: 60000, weird: { deep: true }, port: 3307 },
+    f.applyField(exotic, timeout, '30000'),
+    { type: 'proc', command: 'npx -y pkg', idleMs: 60000, weird: { deep: true }, timeoutMs: 30000 },
     'editing one field must not rebuild the definition from the schema',
   )
   // Switching type keeps what both shapes share and drops what the new one cannot use.
-  assert.deepEqual(f.retype({ type: 'mysql', host: 'h', description: 'd' }, 'mysql', 'redis'), { host: 'h', description: 'd', type: 'redis' })
+  assert.deepEqual(f.retype({ type: 'proc', command: 'npx', description: 'd' }, 'proc', 'http'), { description: 'd', type: 'http' })
   assert.deepEqual(f.retype({ command: 'npx', args: ['-y'] }, 'stdio', 'remote'), {}, 'stdio and remote are mutually exclusive in .mcp.json')
 })
 
-test('pages (form): a driver is added through fields, not by knowing its JSON by heart', { skip: bundleSkipped }, async () => {
+test('pages (form): an adapter is configured through fields, not by knowing its JSON by heart', { skip: bundleSkipped }, async () => {
   const mini = makeMiniReact()
   let saved
   stubFetch((call) => {
@@ -961,86 +926,23 @@ test('pages (form): a driver is added through fields, not by knowing its JSON by
   const typeSelect = findAll(mini.tree(), (el) => el.type === 'select' && el.props.value === 'echo')[0]
   assert.ok(typeSelect !== undefined, 'the type picker shows the definition’s own type')
   const offered = (typeSelect.el.props.children ?? []).flat(Infinity).map((c) => c.props.value)
-  for (const driver of ['mysql', 'pg', 'redis', 'mongo', 'rest']) {
+  for (const driver of ['proc', 'http', 'echo']) {
     assert.ok(offered.includes(driver), 'a native layer offers ' + driver)
   }
 
-  typeSelect.el.props.onChange({ target: { value: 'mysql' } })
+  typeSelect.el.props.onChange({ target: { value: 'http' } })
   await flush()
   const field = (label) => within(mini.tree(), 'mmc-field').find((n) => textOf(n).startsWith(label))
-  const boxIn = (label) => findAll(field(label), (el) => el.type === 'input')[0]
-  assert.ok(boxIn('Host') !== undefined && boxIn('Port') !== undefined, 'mysql fields rendered with their labels')
+  const boxIn = (label) => findAll(field(label), (el) => el.type === 'input' || el.type === 'textarea')[0]
+  assert.ok(boxIn('Endpoint URL') !== undefined, 'http fields rendered with their labels')
   // Re-query between interactions: each commit re-renders the editor, and a
   // handler captured before it belongs to a render that no longer exists.
-  boxIn('Host').el.props.onChange({ target: { value: '127.0.0.1' } })
-  await flush()
-  boxIn('Port').el.props.onChange({ target: { value: '3306' } })
-  await flush()
-  boxIn('Port').el.props.onBlur()                 // parsed values commit on blur
+  boxIn('Endpoint URL').el.props.onChange({ target: { value: 'https://mcp.example.test/mcp' } })
   await flush()
 
   await clickButton(mini, 'save')
-  assert.deepEqual(saved.def, { type: 'mysql', host: '127.0.0.1', port: 3306 }, 'the form writes the engine’s own key names')
+  assert.deepEqual(saved.def, { type: 'http', url: 'https://mcp.example.test/mcp' }, 'the form writes the engine’s own key names')
   assert.equal(saved.expectedRevision, 'r', 'the R5 revision contract is untouched by the form')
-})
-
-test('pages (data): redis and mongo connections browse, instead of being listed and then failing', { skip: bundleSkipped }, async () => {
-  const mini = makeMiniReact()
-  const seen = []
-  stubFetch((call) => {
-    seen.push(call.method + ' ' + call.url)
-    if (call.url.startsWith('/preview')) return { status: 200, json: displayDoc() }
-    if (call.url.startsWith('/engine')) return { status: 200, json: { off: true } }
-    if (call.url === '/data') {
-      return { status: 200, json: { connections: [
-        { name: 'im-redis', dialect: 'redis', label: 'r @ 10.0.0.8:6379', readonly: true, state: 'started', editable: false },
-        { name: 'log-mongo', dialect: 'mongo', label: 'm @ 10.0.0.9:27017', readonly: false, state: 'started', editable: false },
-      ] } }
-    }
-    if (call.url.startsWith('/data/im-redis/keys')) {
-      return { status: 200, json: { keys: [{ key: 'user:7', type: 'hash', ttl: 60, size: 3 }], cursor: '17', done: false, total: 812 } }
-    }
-    if (call.url.startsWith('/data/im-redis/key')) return { status: 200, json: { type: 'hash', value: { name: 'ann' } } }
-    if (call.url.startsWith('/data/im-redis/command')) return { status: 200, json: { reply: 'PONG' } }
-    if (call.url.startsWith('/data/log-mongo/collections')) {
-      return { status: 200, json: { collections: [{ name: 'events', type: 'collection', approxDocs: 4, size: '1 MB' }] } }
-    }
-    if (call.url.startsWith('/data/log-mongo/docs')) {
-      return { status: 200, json: { collection: 'events', documents: [{ _id: 'a1', level: 'warn' }], total: 4, offset: 0, limit: 50, fields: ['_id', 'level'] } }
-    }
-    return { status: 500, json: { error: 'no route for ' + call.method + ' ' + call.url } }
-  })
-  const { registrations } = await loadClient(mini)
-  const section = registrations.find((r) => r.slot === 'settings.section')
-  mini.render(mini.createElement(section.component, { t: (key) => key }))
-  await flush()
-  await clickButton(mini, 'dataTitle')            // the Data tab
-  await flush()
-  assert.ok(findText(mini, 'im-redis'), 'the redis connection is listed')
-
-  // redis: SCAN-paged keys, a type-aware read, and the read-only console
-  await clickButton(mini, 'im-redis')
-  await flush()
-  assert.ok(seen.some((u) => u.startsWith('GET /data/im-redis/keys')), 'the keys route is actually called')
-  assert.ok(findText(mini, 'user:7'), 'keys render')
-  assert.ok(!findText(mini, 'sqlUnsupported'), 'redis is browsed, not declared unsupported')
-  await clickButton(mini, 'user:7')
-  await flush()
-  assert.ok(findText(mini, 'ann'), 'one key reads back')
-  // SCAN is a cursor: More continues it, and it is disabled once done
-  const more = findAll(mini.tree(), (el) => el.type === 'button' && el.props['aria-label'] === 'more')[0]
-  assert.ok(more !== undefined && more.el.props.disabled === false, 'an unfinished scan offers More')
-
-  // mongo: collections then a document grid
-  await clickButton(mini, '‹')            // back to the connection list
-  await flush()
-  await clickButton(mini, 'log-mongo')
-  await flush()
-  assert.ok(findText(mini, 'events'), 'collections render')
-  await clickButton(mini, 'events')
-  await flush()
-  assert.ok(seen.some((u) => u.startsWith('GET /data/log-mongo/docs')), 'the docs route is actually called')
-  assert.ok(findText(mini, 'warn'), 'documents render as a grid')
 })
 
 test('pages (import): a pasted .mcp.json is planned as a dry run, then applied entry by entry', { skip: bundleSkipped }, async () => {
@@ -1344,40 +1246,6 @@ test('pages (calls): the log renders the ENGINE\'s fields, and a clipped reply d
   const next = buttonsLabelled(mini.tree(), '›')[0]
   assert.ok(next !== undefined, 'a next-page control exists')
   assert.notEqual(next.el.props.disabled, true, 'more:true keeps the next page reachable')
-})
-
-test('pages (traffic): a caller chip is the caller, not [object Object]', { skip: bundleSkipped }, async () => {
-  // trafficClients() returns records ({key,label,count,…}); the pane passed
-  // each one straight into a button label, so the filter row rendered a line
-  // of `[object Object]` buttons that set the filter to an object.
-  const mini = makeMiniReact()
-  stubFetch((call) => {
-    if (call.url.startsWith('/preview')) return { status: 200, json: displayDoc() }
-    if (call.url.startsWith('/engine')) return { status: 200, json: { off: true } }
-    if (call.url.startsWith('/traffic')) {
-      return { status: 200, json: {
-        rows: [{ seq: 3, at: '2026-09-07T02:43:09.978Z', mcp: 'alpha', method: 'tools/call',
-                 client: 'default', clientName: 'Claude Code', params: '{"name":"echo"}', ok: true, ms: 7, hasResponse: true }],
-        total: 1, totalUnfiltered: 1, page: 0, pageSize: 20, more: false,
-        clients: [{ key: 'claude-code', label: 'Claude Code', tokens: ['default'], mcps: ['alpha'], count: 5, lastAt: '2026-09-07T02:43:09.978Z', lastSeq: 3 }],
-      } }
-    }
-    return { status: 500, json: { error: 'no route' } }
-  })
-  const { registrations } = await loadClient(mini)
-  const section = registrations.find((r) => r.slot === 'settings.section')
-  mini.render(mini.createElement(section.component, { t: (key) => key }))
-  await flush()
-  await clickButton(mini, 'trafficTitle')
-  await flush()
-  assert.equal(mini.renderError(), null)
-  const all = wholeText(mini)
-  assert.ok(!all.includes('[object Object]'), 'no stringified object anywhere: ' + all.slice(0, 200))
-  assert.ok(all.includes('Claude Code'), 'the caller chip shows its label')
-  const row = findClass(mini, 'mmc-r').find((r) => textOf(r).includes('alpha'))
-  assert.ok(row !== undefined, 'the traffic row rendered')
-  assert.ok(textOf(row).includes('02:43:09'), 'timestamp from `at`')
-  assert.ok(textOf(row).includes('tools/call'), 'method chip')
 })
 
 test('css: a generated form clamps the server\'s prose instead of burying its inputs', () => {

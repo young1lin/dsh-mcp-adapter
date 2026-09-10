@@ -548,3 +548,13 @@ UI 实际操作、URL、截图/记录位置：live 验证 curl 3080 /dsh-mcp-man
 内存/进程/故障验证：Win32_Process 实测 dsh PID 52120（17:05 起）+ 引擎子进程 PID 58452；prewarm start:false 不新增常驻进程
 本次已勾选项：无 TASK 勾选变化（维护轮）
 未完成项及原因：dsh web 未重启（用户动作）——重启后 prewarm 日志行与子代理首请求工具面待实测；冷 def 首机器会话竞态记录于契约 §12.1
+
+### 2026-09-10 mcp-only 分支动手术（分支轮，非 TASK 阶段）
+
+日期与执行者：2026-09-10，Claude（mcp-only 分支会话，自 main@311d864 切出）
+变更内容与原因：用户要求"只有 MCP 适配的功能"——SSH 隧道、数据库浏览器（mysql/redis/pg/mongo/rest 适配器与资源层）、流量环、env/backup/migration/skill 面、独立 lmg 网关形态（bin/cli/daemon/pidfile/admin 面板/adminapi）全部切除；引擎只留 MCP 端点 + /health + 私有 IPC（方法表 51→30：mcp 21 / tokens 5 / engine 4）；宿主 apply() 改为 engine-only（无 engine 块直接报错，回应另一台机器的 "Load failed: engine is not enabled"）；配置层 gateway 键移除（带指向性错误信息）、legacy 键接受但告警忽略；客户端只留 MCP + 高级（令牌/端点/内存）两页；依赖砍掉 mysql2/pg/mongodb/ioredis/ssh2/zod
+执行命令与退出码：npx tsc --noEmit（0）、npm run build（0）、npm test 124/124、npm run test:engine 279/279、引擎子进程裸启动握手 OK
+自动测试结果：test/*.test.mjs 删 5 个（gateway/plan/settings/session/legacy-migration），改 4 个（config/engine-domains 换 proc+echo 载体、host-bridge 砍面、client-ui 两页化+fields 换 proc/http）；test/engine 删 26 个（tunnel×10/db×7/admin×4/其他），改 4 个（router 面板 404+health、mcp-test 改 IPC 探针、secure-store 去 daemon、bootstrap 种子清单）
+踩坑记录：① proc 定义的 command 是完整命令行，def.args 被静默忽略（engine-domains 曾因此 60s 握手超时）；② tsc 不删 dist 旧产物，动态 import 指向已删模块在 --noEmit 下静默通过（dist/engine/pidfile.js 之坑）——构建前必须清 dist；③ 行尾：python 文本模式曾把 factory/types 转成 LF，写回时 binary 模式保 CRLF
+未完成项及原因：分支尚未合并/publish（用户决策）；实机安装验证待另一台机器 `dsh plugin --profile web add` 走本分支
+
