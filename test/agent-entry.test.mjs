@@ -97,8 +97,11 @@ test('agent entry: engine-backed session tools register in the agent scope, snap
   t.after(() => {
     delete process.env.DSH_HOME
     if (realProfile !== undefined) process.env.USERPROFILE = realProfile
-    rmSync(dir, { recursive: true, force: true })
-    return supervisor.dispose()
+    // dispose BEFORE rm: the live engine child keeps writing into the
+    // storage dir (ledger, state) — an rmSync racing those writes throws
+    // ENOTEMPTY on POSIX, and the throw skips dispose entirely, leaking a
+    // child whose pipes hold the whole test process open (the CI hang).
+    return supervisor.dispose().finally(() => rmSync(dir, { recursive: true, force: true }))
   })
   await supervisor.ensure()
   publishEngine(supervisor)
@@ -166,8 +169,9 @@ test('agent entry R2: the same logical name in two workspaces stays two isolated
     publishRuntime(undefined) // do not leak this test's services into the next
     delete process.env.DSH_HOME
     if (realProfile !== undefined) process.env.USERPROFILE = realProfile
-    rmSync(dir, { recursive: true, force: true })
-    return supervisor.dispose()
+    // dispose BEFORE rm (see the note above): an rmSync racing the live
+    // engine's writes throws ENOTEMPTY and skips dispose, leaking a child.
+    return supervisor.dispose().finally(() => rmSync(dir, { recursive: true, force: true }))
   })
   await supervisor.ensure()
   publishEngine(supervisor)
@@ -237,8 +241,11 @@ test('agent entry R3: a re-appearing session restores its frozen generation inst
   t.after(() => {
     delete process.env.DSH_HOME
     if (realProfile !== undefined) process.env.USERPROFILE = realProfile
-    rmSync(dir, { recursive: true, force: true })
-    return supervisor.dispose()
+    // dispose BEFORE rm: the live engine child keeps writing into the
+    // storage dir (ledger, state) — an rmSync racing those writes throws
+    // ENOTEMPTY on POSIX, and the throw skips dispose entirely, leaking a
+    // child whose pipes hold the whole test process open (the CI hang).
+    return supervisor.dispose().finally(() => rmSync(dir, { recursive: true, force: true }))
   })
   await supervisor.ensure()
   publishEngine(supervisor)
