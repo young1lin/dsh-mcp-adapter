@@ -8,7 +8,7 @@ DeepSeek Harness（DSH）插件，只做一件事：把 MCP 服务器挂进每�
 
 - **MCP 服务**：新建/编辑/删除/重命名/导入、分组、排序、启停、健康与进程管理——底层是标准 `.mcp.json` 文件（全局 `~/.agents/.mcp.json`、项目 `.mcp.json`）+ 插件私有的加密 native 目录（proc/http/echo 及第三方适配器）。
 - **三层作用域**：global / project / session，墓碑式禁用、整条覆盖、同层冲突诊断、每会话快照。
-- **会话工具**：经预设行（`@young1lin/dsh-mcp-adapter/agent`）在 agent 自己的作用域里注册，等待 setup 屏障——按工作区隔离工具集，不泄漏到全局，单服务器失败不影响其他。
+- **会话工具**：由**宿主**直接注册进每个会话自己的 agent 作用域（等待 setup 屏障）——按工作区隔离工具集，不泄漏到全局，单服务器失败不影响其他。**无需任何 preset 改动；本插件不新增 preset，也绝不要求你写 preset。**
 - **MCP 端点**：可选对外发布一个 HTTP 端口，统一代理所有已配置的 MCP，支持命名 Bearer 令牌给外部客户端。
 - **可观测**：每 MCP 调用日志（区分 `panel` 与 `dsh-session` 来源）、进程树内存、stderr 捕获。
 - **安全**：宿主与引擎间是私有 stdio IPC；浏览器只能走同源 `/dsh-mcp-manager` 桥（回环 + 同源信任围栏）；列表 DTO 全部掩码密钥，落盘密封（DPAPI/绑机器）。
@@ -31,14 +31,7 @@ dsh plugin add @young1lin/dsh-mcp-adapter   # 或把 checkout 软链进 ~/.dsh/p
     engine: true        # 本分支必填（插件自有引擎子进程）
 ```
 
-再给预设（`~/.dsh/.agent-presets/<你的预设>/agent.cordis.yml`）加 agent 半区行：
-
-```yaml
-- id: mcp-session-tools
-  name: '@young1lin/dsh-mcp-adapter/agent'
-```
-
-然后打开 **设置 → MCP 与连接**（以及会话里的 **MCP** 标签页）。
+到此安装结束。会话工具由宿主侧挂进每个会话自己的作用域——**不新增 preset、不改任何 preset，永远不需要**。然后打开 **设置 → MCP 与连接**（以及会话里的 **MCP** 标签页）。
 
 ## 作用域与生效时机
 

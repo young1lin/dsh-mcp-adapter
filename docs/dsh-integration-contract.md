@@ -110,5 +110,5 @@
 3. 项目菜单扩展位仍缺（§7）。
 4. 双注册风险不变（§2.4）。
 5. preset 行（`dsh-mcp-json-adapter/agent`）仍可用：preset 行=裸包名模块行的解析不变（从 harness base 走 profile 软链，§5.5）；**行内若提供服务必须置于 `isolate` realm**（本插件 agent 行 inject:[] 不提供服务，不触发）；subagent 天然加入父 composition（composeFrom），工具随父。注意新的故障呈现面：**discovery 预解析行内包**，软链失效会把整个用户 preset 标为 BROKEN（§5.5）。
-6. preset standing mount 的行工具被该 preset 上所有会话从请求 #1 继承（§5.5）——若未来要"请求 #1 绝对保证"，正道是把本插件行写进用户 preset（可用 AgentPresets.copy()/roster Remote API，优于引导手抄），而非宿主挂载。
+6. preset standing mount 的行工具被该 preset 上所有会话从请求 #1 继承（§5.5）——但**本项目禁止任何 preset 新增**（用户明令，2026-09-10）：不得引导用户写 preset 行，也不得用 AgentPresets API 代写；"请求 #1 绝对保证"若要做，只能在宿主平面解决（prewarm 已是这条路的工程化形态）。
 7. 升级 DSH 时按 §1 重测；本版契约引用源码仓 file:line（与安装版同版本）。0.1.1-rc.2→0.1.5-alpha.2 经 tag 级 diff 复核：loader/include/vendor 侧全部版本字段级变更（commit 6af96785b5），无未记录的破坏面。

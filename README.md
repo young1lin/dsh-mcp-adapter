@@ -6,7 +6,7 @@
 
 - **MCP services**: create/edit/delete/rename/import, grouping, ordering, enable/disable, health & process management — over standard `.mcp.json` files (global `~/.agents/.mcp.json`, project `.mcp.json`) and a plugin-private encrypted native catalog (proc/http/echo + third-party adapters).
 - **Three scopes**: global / project / session with tombstone disables, whole-entry override, same-level conflict diagnostics, per-session snapshots.
-- **Session tools**: registered inside the agent's own scope via the preset-row entry (`@young1lin/dsh-mcp-adapter/agent`) behind the awaited setup barrier — per-workspace tool sets, no global leaks, failures isolated per server.
+- **Session tools**: the HOST registers them inside each session's own agent scope behind the awaited setup barrier — per-workspace tool sets, no global leaks, failures isolated per server. **No preset changes needed; this plugin adds no preset and never asks you to author one.**
 - **MCP endpoint**: optionally publish one HTTP port fronting every configured MCP, with named bearer tokens for external clients.
 - **Observability**: per-MCP call logs (source-attributed `panel` vs `dsh-session`), process-tree memory, stderr capture.
 - **Security**: private stdio IPC between host and engine; the browser reaches management only through the same-origin `/dsh-mcp-manager` bridge behind a loopback/same-origin trust fence; secrets masked in every list DTO and sealed (DPAPI/machine-bound) at rest.
@@ -29,14 +29,7 @@ Enable the plugin-owned engine in your profile's `cordis.patch.yml`:
     engine: true        # required on this branch (plugin-owned child engine)
 ```
 
-Add the agent-plane row to a preset (`~/.dsh/.agent-presets/<yours>/agent.cordis.yml`) for per-session tools:
-
-```yaml
-- id: mcp-session-tools
-  name: '@young1lin/dsh-mcp-adapter/agent'
-```
-
-Then open **Settings → MCP 与连接** (and the conversation **MCP** tab).
+That is the whole setup. Session tools mount host-side into every session's own scope — **no preset additions, no preset edits, ever**. Then open **Settings → MCP 与连接** (and the conversation **MCP** tab).
 
 ## Scope & timing semantics
 
