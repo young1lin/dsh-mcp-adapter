@@ -1,4 +1,4 @@
-# dsh-mcp-json-adapter
+# @young1lin/dsh-mcp-adapter
 
 **MCP 与连接** — a single DeepSeek Harness (DSH) plugin unifying MCP server management, SSH tunnels/port mappings, and the embedded management engine. Absorbs local-mcp-gateway (MIT) as a plugin-owned child process; no separate gateway install, no :19999 panel to open.
 
@@ -6,7 +6,7 @@
 
 - **MCP services**: create/edit/delete/rename/import/export, grouping, ordering, enable/disable, health & process management — over standard `.mcp.json` files (global `~/.agents/.mcp.json`, project `.mcp.json`) and a plugin-private encrypted native catalog (mysql/redis/pg/mongo/rest/echo + third-party adapters).
 - **Three scopes**: global / project / session with tombstone disables, whole-entry override, same-level conflict diagnostics, per-session snapshots.
-- **Session tools**: registered inside the agent's own scope via the preset-row entry (`dsh-mcp-json-adapter/agent`) behind the awaited setup barrier — per-workspace tool sets, no global leaks, failures isolated per server.
+- **Session tools**: registered inside the agent's own scope via the preset-row entry (`@young1lin/dsh-mcp-adapter/agent`) behind the awaited setup barrier — per-workspace tool sets, no global leaks, failures isolated per server.
 - **SSH & tunnels**: connections (key/password/${ENV} refs, TOFU fingerprints), local port mappings with live stats, reconnect only for retryable failures, port-owner diagnostics.
 - **Observability**: per-MCP call logs, traffic ring, process-tree memory, stderr capture; manual Runs are source-attributed (`panel` vs `dsh-session`).
 - **Migration**: read-only dry-run + idempotent import from an existing local-mcp-gateway data dir (sealed or legacy plaintext; sources never rewritten).
@@ -15,14 +15,14 @@
 ## Install
 
 ```bash
-npm install -g dsh-mcp-json-adapter   # or link a checkout into ~/.dsh/profiles/web
+dsh plugin add @young1lin/dsh-mcp-adapter   # or link a checkout into ~/.dsh/profiles/web
 ```
 
 Enable the plugin-owned engine in your profile's `cordis.patch.yml`:
 
 ```yaml
 - id: mcp-json-adapter
-  name: dsh-mcp-json-adapter
+  name: '@young1lin/dsh-mcp-adapter'
   config:
     project: session
     engine: true        # plugin-owned child engine (ephemeral loopback port)
@@ -32,7 +32,7 @@ Add the agent-plane row to a preset (`~/.dsh/.agent-presets/<yours>/agent.cordis
 
 ```yaml
 - id: mcp-session-tools
-  name: 'dsh-mcp-json-adapter/agent'
+  name: '@young1lin/dsh-mcp-adapter/agent'
 ```
 
 Then open **Settings → MCP 与连接** (and the conversation **MCP** tab).

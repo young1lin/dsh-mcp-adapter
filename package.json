@@ -1,5 +1,5 @@
 {
-  "name": "dsh-mcp-json-adapter",
+  "name": "@young1lin/dsh-mcp-adapter",
   "version": "0.3.2",
   "type": "module",
   "description": "DeepSeek Harness plugin unifying MCP servers, SSH tunnels and connections management (mounts standard .mcp.json plus an embedded managed engine).",
@@ -70,6 +70,9 @@
     }
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/node": "^2.0.0",

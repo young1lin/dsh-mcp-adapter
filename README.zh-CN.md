@@ -1,4 +1,4 @@
-# dsh-mcp-json-adapter
+# @young1lin/dsh-mcp-adapter
 
 [English](README.md)
 
