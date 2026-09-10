@@ -7,12 +7,17 @@ on:
 
 jobs:
   test:
+    # node 22 only: engines requires >=22.19.0, and the node 20 test runner
+    # cannot expand the "test/*.test.mjs" glob in the test script at all.
+    # timeout: the ubuntu leg once hung on a leaked handle for GitHub's
+    # full 6h cap — fail fast instead while that leak is still unfixed.
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        node: [20, 22]
+        node: [22]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
