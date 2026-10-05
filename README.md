@@ -7,11 +7,10 @@
 - **MCP services**: create/edit/delete/rename/import, grouping, ordering, enable/disable, health & process management — over standard `.mcp.json` files (global `~/.agents/.mcp.json`, project `.mcp.json`) and a plugin-private encrypted native catalog (proc/http/echo + third-party adapters).
 - **Three scopes**: global / project / session with tombstone disables, whole-entry override, same-level conflict diagnostics, per-session snapshots.
 - **Session tools**: the HOST registers them inside each session's own agent scope behind the awaited setup barrier — per-workspace tool sets, no global leaks, failures isolated per server. **No preset changes needed; this plugin adds no preset and never asks you to author one.**
-- **MCP endpoint**: optionally publish one HTTP port fronting every configured MCP, with named bearer tokens for external clients.
-- **Observability**: per-MCP call logs (source-attributed `panel` vs `dsh-session`), process-tree memory, stderr capture.
+- **MCP services page**: configure, start/stop, inspect tools/resources/prompts, execute tools, view per-MCP call logs (source-attributed `panel` vs `dsh-session`) and stderr. The Advanced page, public HTTP MCP endpoint, token management, and memory diagnostics are not offered.
 - **Security**: private stdio IPC between host and engine; the browser reaches management only through the same-origin `/dsh-mcp-manager` bridge behind a loopback/same-origin trust fence; secrets masked in every list DTO and sealed (DPAPI/machine-bound) at rest.
 
-This build is **engine-only**: without `engine: true` the plugin refuses to start with a clear error instead of silently mounting nothing.
+This build is **engine-only**: the engine starts by default; only explicitly setting `engine: false` is refused.
 
 ## Install
 
@@ -26,13 +25,13 @@ Mount it by package name in your profile's `cordis.patch.yml` — this is the wh
   name: '@young1lin/dsh-mcp-adapter'
 ```
 
-No `engine` key needed: the plugin-owned engine child is **on by default** (an `engine` block only overrides knobs — `httpPort` / `publicMcp` / `storageDir` / `respawn` / `startupTimeoutMs` / `sessionTools`). Session tools mount host-side into every session's own scope — **no preset additions, no preset edits, ever** (and `engine: false` is refused: there is no other mode).
+No `engine` key needed: the plugin-owned engine child is **on by default**. An `engine` block can override `storageDir` / `respawn` / `startupTimeoutMs` / `sessionTools`. Legacy `httpPort` / `publicMcp` values are accepted for compatibility but **ignored**; old `listener.json` settings are also ignored. The engine never listens on HTTP, and existing files and secrets are not deleted. Session tools mount host-side into every session's own scope — **no preset additions or edits** (`engine: false` is refused).
 
-Then open **Settings → MCP 与连接** (and the conversation **MCP** tab).
+Then open **Settings → MCP 与连接 → MCP Services** (and the conversation **MCP** tab). There is no Advanced tab.
 
 ### What is the "engine"?
 
-One private child process (`dist/engine/ipc-main.js`) the plugin spawns itself: it hosts every MCP you configure (proc children, http proxies), keeps the call log, and talks to the dsh host process over a stdio pipe nothing else can reach. If an MCP crashes, the engine dies and respawns — dsh itself never goes down with it. It is inside the package: nothing to install separately, no port open unless you publish one.
+One private child process (`dist/engine/ipc-main.js`) the plugin spawns itself: it hosts every MCP you configure (proc children, http proxies), keeps the call log, and talks to the dsh host process over a stdio pipe nothing else can reach. If an MCP crashes, the engine dies and respawns — dsh itself never goes down with it. It is inside the package: nothing to install separately, and no HTTP port is opened.
 
 ### Source install (the mcp-only branch)
 

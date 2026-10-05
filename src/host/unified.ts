@@ -13,7 +13,7 @@
  * `dsh-mcp-json-adapter/agent` row. A deployment that never authored one —
  * i.e. every default install — logged "tools are registered only in agent
  * scopes" and then registered none, in any session, ever. `engine.sessionTools:
- * false` restores the preset-only behaviour for deployments that want it.
+ * false` explicitly disables session tool registration.
  */
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -25,7 +25,6 @@ import { createEngineSupervisor, type EngineSupervisor } from '../runtime/engine
 import { publishRuntime, sharedRuntime } from '../runtime/engine-shared.js'
 import { workspaceRootOfFallbackId } from '../runtime/session-runtime.js'
 import { mountBridge, type WebServerFace } from './api.js'
-import { applyListener, readListener, resolveListener, type ListenerState } from './listener.js'
 
 interface Workspace { id: string; path: string; title?: string; sessionIds?: Iterable<string> }
 interface Registry { list(): Workspace[]; get(id: string): Workspace | undefined }
@@ -82,19 +81,14 @@ export async function startUnifiedHost(
       return root === undefined || root.length === 0 ? undefined : { root }
     } },
   })
-  // The MCP endpoint: the plugin config decides when it says anything, else
-  // what the panel stored. Read once, here, because the listener is a spawn
-  // argument — the engine cannot be asked about a port it has not bound yet.
-  //
-  // And asked of the OS before the engine tries: a port someone else holds
-  // used to be a failed bind, a dead engine and a plugin that would not load,
-  // which took the settings panel down with it — the one place the port could
-  // have been changed. Now it starts unpublished and says why.
-  const listener: ListenerState & { problem?: string } =
-    await applyListener(resolveListener(resolved.engine, readListener(storageDir)))
-  if (listener.problem !== undefined) ctx.logger.warn('mcp-json-adapter: ' + listener.problem)
+  // No HTTP MCP endpoint in the MCP-services-only build. Preserve legacy
+  // engine.httpPort/publicMcp config so existing installs still start, but
+  // explicitly override it (and never read the old listener.json) on spawn.
+  if (resolved.engine.publicMcp === true || resolved.engine.httpPort !== undefined) {
+    ctx.logger.warn('mcp-json-adapter: engine.publicMcp / engine.httpPort are ignored; the external MCP endpoint is disabled')
+  }
   const engine: EngineSupervisor = factory({
-    ...resolved.engine, storageDir, httpPort: listener.port, publicMcp: listener.enabled,
+    ...resolved.engine, storageDir, httpPort: 0, publicMcp: false,
   }, { info: (line) => ctx.logger.info(line), warn: (line) => ctx.logger.warn(line) })
   let disposed = false
   const cleanup = async () => {
@@ -125,13 +119,11 @@ export async function startUnifiedHost(
       const web = service(webCtx, 'webServer') as WebServerFace | undefined
       if (web === undefined) return
       const dispose = mountBridge(web, { config, engine: () => disposed ? undefined : engine, storageDir,
-        listenerConfig: () => resolved.engine ?? undefined,
-        listenerActual: () => listener,
         workspaces: () => workspaces().map(({ id, path, title }) => ({ id, path, title })),
       })
       webCtx.effect(() => dispose, 'mcp-manager.web-bridge')
     })
     ctx.logger.info('mcp-manager: private engine ready (pid ' + ready.pid + '); session tools '
-      + (resolved.engine.sessionTools ? 'register per agent scope from this host mount' : 'are left to the preset row (engine.sessionTools: false)'))
+      + (resolved.engine.sessionTools ? 'register per agent scope from this host mount' : 'disabled by engine.sessionTools: false'))
   } catch (error) { await cleanup(); throw error }
 }

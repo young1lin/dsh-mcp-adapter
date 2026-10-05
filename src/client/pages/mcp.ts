@@ -860,7 +860,7 @@ export function makeMcpWorkbench(React: ReactLike, kit: Kit): (props: { t: T }) 
       // ONE primary action stays visible; refresh / arrange / import are
       // occasional, so they sit in the ⋯ menu. Four buttons plus the scope
       // picker did not fit a 564px pane and wrapped onto a second line.
-      kit.head(t('intro'),
+      kit.head(t('entries'),
         kit.menu([
           { label: t('refresh'), onPick: () => { void refresh() } },
           { label: arranging ? t('arrangeDone') : t('arrange'), onPick: () => { setArranging(!arranging) } },
@@ -868,6 +868,7 @@ export function makeMcpWorkbench(React: ReactLike, kit: Kit): (props: { t: T }) 
         ], t('more')),
         kit.btn(t('addMcp'), () => { setPicking(!picking); setImporting(false) }, { key: 'add', primary: true }),
       ),
+      kit.note(t('intro')),
       kit.h('div', { className: 'mmc-row' },
         workspaces !== undefined && workspaces.length > 0
           ? kit.select({ value: ws, onChange: (e: { target: { value: string } }) => setWs(e.target.value), title: t('workspace') },
@@ -1132,20 +1133,14 @@ export function makeMcpDetail(React: ReactLike, kit: Kit): (props: McpDetailProp
  */
 function StatusStrip(kit: Kit, t: T, p: Preview, engine: Record<string, unknown> | undefined) {
   const off = engine === undefined || engine.off === true
-  const port = engine?.port
   const count = Array.isArray(engine?.mcps) ? (engine.mcps as unknown[]).length : 0
-  // The plugin engine talks over the private IPC pipe and binds no HTTP
-  // listener, so its port is 0 — printing "HTTP port 0" states a number that
-  // is always zero and means nothing. Show a port only when there IS one.
-  const listening = typeof port === 'number' && port > 0
   return kit.h('div', { className: 'mmc-row mmc-strip' },
     kit.dot(off ? 'off' : 'ok'),
     // "MCPs 8" read as the number of CONFIGURED entries and sat above a list
     // of a different length. It is the count the engine currently HOSTS, so
     // it has to say so.
     kit.h('span', { className: 'mmc-meta' },
-      off ? t('engineOff')
-        : (listening ? t('enginePort') + ' ' + String(port) + ' · ' : '') + t('mcpsHosted').replace('{n}', String(count))),
+      off ? t('engineOff') : t('mcpsHosted').replace('{n}', String(count))),
     kit.h('span', { className: 'mmc-spacer' }),
     // Layer chips: only a PROBLEM is toned as an error. A layer that merely
     // has no file yet is muted, with a title spelling out what the ∅ means.

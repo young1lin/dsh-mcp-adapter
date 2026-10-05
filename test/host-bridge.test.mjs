@@ -13,8 +13,6 @@ process.env.MCP_GATEWAY_MASTER_KEY = '99'.repeat(32)
 
 const { mountBridge, refusalFor } = await import('../dist/host/api.js')
 const { createConfigService } = await import('../dist/config/service.js')
-const { DEFAULT_MCP_PORT, applyListener, portFree, resolveListener } = await import('../dist/host/listener.js')
-const { createServer } = await import('node:net')
 
 /** Minimal req/res fakes shaped like node:http. */
 function fakeReq(method, path, { host = '127.0.0.1:3080', origin, site, remote = '127.0.0.1', body } = {}) {
@@ -96,7 +94,7 @@ test('bridge: preview + save round-trip through the real config service; fence g
   assert.equal(engine.json.off, true)
 })
 
-test('bridge: the P5 management routes all answer (session, calls, tokens)', async (t) => {
+test('bridge: MCP management routes answer while Advanced-only routes are absent', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-bridge2-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const globalFile = join(dir, 'agents.json')
@@ -114,11 +112,6 @@ test('bridge: the P5 management routes all answer (session, calls, tokens)', asy
         case 'mcp.calls': return { name: params.name, calls: [{ seq: 9, ts: 't', tool: 'x', preview: 'p' }], page: params.page, pageSize: 20, more: false }
         case 'mcp.callDetail': return { call: { seq: params.seq, tool: 'x', output: 'full' } }
         case 'mcp.callSources': return { sources: [{ name: params.name, session: false }, { name: 's0123456789-abcdef0123-' + params.name, session: true, lastSeq: 4 }] }
-        case 'tokens.list': return { tokens: [{ id: 'default', label: 'default', createdAt: '' }] }
-        case 'tokens.create': return { id: 't1', label: params.label, secret: 's1', createdAt: 'x' }
-        case 'tokens.reveal': return { id: params.id, label: 'l', secret: 'sec' }
-        case 'tokens.rotate': return { id: params.id, label: 'l', secret: 'sec2' }
-        case 'tokens.revoke': return { ok: true }
         default: throw new Error('unexpected method ' + method)
       }
     },
@@ -168,20 +161,19 @@ test('bridge: the P5 management routes all answer (session, calls, tokens)', asy
   assert.equal(c3.json.sources.length, 2)
   assert.deepEqual(seen.at(-1), { method: 'mcp.callSources', params: { name: 'alpha' } })
 
-  // --- tokens: list/create/reveal/rotate/revoke ---
-  const k1 = await H('GET', '/tokens')
-  assert.equal(k1.status, 200)
-  assert.equal(k1.json.tokenEnv, 'MCP_GATEWAY_TOKEN')
-  assert.equal(k1.json.tokens[0].id, 'default')
-  const k2 = await H('POST', '/tokens', { body: { label: 'laptop' } })
-  assert.deepEqual(seen.at(-1), { method: 'tokens.create', params: { label: 'laptop' } })
-  const k3 = await H('GET', '/tokens/t1/secret')
-  assert.deepEqual(seen.at(-1), { method: 'tokens.reveal', params: { id: 't1' } })
-  const k4 = await H('POST', '/tokens/t1/rotate')
-  assert.deepEqual(seen.at(-1), { method: 'tokens.rotate', params: { id: 't1' } })
-  const k5 = await H('DELETE', '/tokens/t1')
-  assert.equal(k5.status, 200)
-  assert.deepEqual(seen.at(-1), { method: 'tokens.revoke', params: { id: 't1' } })
+  // Advanced-only routes must not expose secrets or diagnostics. The MCP
+  // services routes above continue to forward to the engine.
+  for (const [verb, path, body] of [
+    ['GET', '/tokens'], ['POST', '/tokens', { label: 'laptop' }],
+    ['GET', '/tokens/t1/secret'], ['POST', '/tokens/t1/rotate'], ['DELETE', '/tokens/t1'],
+    ['GET', '/token/default'], ['GET', '/creds'], ['GET', '/memory?tree=1'],
+    ['GET', '/listener'], ['POST', '/listener', { enabled: true, port: 12345 }],
+  ]) {
+    const before = seen.length
+    const response = await H(verb, path, body === undefined ? {} : { body })
+    assert.match(response.json.error, /no route for/, `${verb} ${path} is not mounted`)
+    assert.equal(seen.length, before, `${verb} ${path} never reaches engine IPC`)
+  }
 })
 
 test('bridge: /import plans a pasted document as a dry run, then writes it entry by entry', async (t) => {
@@ -355,97 +347,6 @@ test('bridge: /view persists grouping and order without touching any config laye
   const after = (await H('GET', '/view')).json
   assert.equal(after.entries.bravo?.group, 'ai', 'the new name keeps the grouping')
   assert.equal(after.entries.beta, undefined, 'the old name is gone')
-})
-
-test('listener: resolving the MCP endpoint — config first, then the panel, then off', () => {
-  // Off is the default, and an unpublished endpoint keeps port 0: the host
-  // reaches the engine over its private pipe, so the number is nobody's business.
-  assert.deepEqual(resolveListener(undefined, undefined), { enabled: false, port: 0, locked: false })
-
-  // "On" has to mean a port a client can be told about, so an unnamed one is
-  // the default rather than an ephemeral one that moves every restart.
-  assert.deepEqual(resolveListener(undefined, { enabled: true }), { enabled: true, port: DEFAULT_MCP_PORT, locked: false })
-  assert.deepEqual(resolveListener(undefined, { enabled: true, port: 8123 }), { enabled: true, port: 8123, locked: false })
-
-  // A config file outranks the panel, and says so, so the switch can be shown
-  // as someone else's decision instead of silently doing nothing.
-  assert.deepEqual(resolveListener({ publicMcp: true }, { enabled: false, port: 8123 }),
-    { enabled: true, port: 8123, locked: true })
-  assert.deepEqual(resolveListener({ httpPort: 3000 }, { enabled: true, port: 8123 }),
-    { enabled: true, port: 3000, locked: true })
-  assert.deepEqual(resolveListener({ publicMcp: false }, { enabled: true, port: 8123 }),
-    { enabled: false, port: 8123, locked: true }, 'the config can turn it off over the panel too')
-
-  // Junk in the stored file must not decide a port.
-  assert.equal(resolveListener(undefined, { enabled: true, port: 70000 }).port, DEFAULT_MCP_PORT)
-  assert.equal(resolveListener(undefined, { enabled: true, port: 'abc' }).port, DEFAULT_MCP_PORT)
-})
-
-test('bridge: the MCP endpoint answers with the engine down, and refuses to fight the config', async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'mcp-listener-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const svc = createConfigService({ storageDir: dir, globalFile: join(dir, 'agents.json'), workspaceResolver: { resolve: () => ({ root: dir }) } })
-  let fixed
-  let registered = null
-  mountBridge({ register: (route) => { registered = route; return () => {} } },
-    { config: svc, engine: () => undefined, storageDir: dir, listenerConfig: () => fixed })
-  const H = (method, path, body) => handle(registered.handler, fakeReq(method, '/dsh-mcp-manager' + path, body !== undefined ? { body } : {}), fakeRes())
-
-  // "It is off" is exactly when someone comes here to turn it on, so this must
-  // not be behind the engine-is-enabled guard.
-  const initial = await H('GET', '/listener')
-  assert.equal(initial.status, 200)
-  assert.deepEqual(initial.json, { enabled: false, port: 0, locked: false })
-
-  const saved = await H('POST', '/listener', { enabled: true, port: 0 })
-  assert.equal(saved.status, 200)
-  assert.equal(saved.json.enabled, true)
-  assert.equal(saved.json.port, DEFAULT_MCP_PORT, 'publishing without a port names the default')
-  assert.equal(saved.json.restartRequired, true, 'the supervisor binds at the next load, and says so')
-
-  const back = await H('GET', '/listener')
-  assert.deepEqual(back.json.stored, { enabled: true, port: DEFAULT_MCP_PORT }, 'it survives the round trip')
-  assert.equal(back.json.port, DEFAULT_MCP_PORT)
-
-  assert.equal((await H('POST', '/listener', { enabled: true, port: 70000 })).status, 500, 'a port that is not one is refused')
-
-  // Once the config decides, the panel is a display of that decision.
-  fixed = { publicMcp: false }
-  const locked = await H('GET', '/listener')
-  assert.equal(locked.json.locked, true)
-  assert.equal(locked.json.enabled, false, 'the config wins over what the panel had stored')
-  const refused = await H('POST', '/listener', { enabled: true, port: 8123 })
-  assert.equal(refused.status, 500)
-  assert.match(refused.json.error, /fixed by the plugin config/)
-  assert.deepEqual((await H('GET', '/listener')).json.stored, { enabled: true, port: DEFAULT_MCP_PORT },
-    'and the refusal wrote nothing')
-})
-
-test('listener: a port someone else holds turns the endpoint off, it does not take the host down', async (t) => {
-  // The failure this prevents: the engine could not bind, so it died, so the
-  // plugin would not load — and the settings panel went with it, which is the
-  // only place the port could have been changed. Unpublished-with-a-reason is
-  // recoverable; a dead plugin is not.
-  const squatter = createServer()
-  await new Promise((resolve) => squatter.listen(0, '127.0.0.1', resolve))
-  const taken = squatter.address().port
-  t.after(() => new Promise((resolve) => squatter.close(resolve)))
-
-  assert.equal(await portFree(taken), false, 'the probe binds for real, so it agrees with the engine')
-  const applied = await applyListener({ enabled: true, port: taken, locked: false })
-  assert.equal(applied.enabled, false, 'not published')
-  assert.equal(applied.port, 0)
-  assert.match(applied.problem, /already in use/)
-  assert.match(applied.problem, new RegExp(String(taken)), 'and names the port, so it can be changed')
-
-  // A free port is left exactly as it was asked for.
-  await new Promise((resolve) => squatter.close(resolve))
-  const free = await applyListener({ enabled: true, port: taken, locked: false })
-  assert.deepEqual(free, { enabled: true, port: taken, locked: false })
-
-  // Off, and ephemeral, are never probed — there is nothing to clash with.
-  assert.deepEqual(await applyListener({ enabled: false, port: 0, locked: false }), { enabled: false, port: 0, locked: false })
-  assert.equal(await portFree(0), true)
 })
 
 test("bridge: /view keeps another workspace's grouping — ui-view.json is one file, not one per scope", async (t) => {

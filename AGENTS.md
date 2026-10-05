@@ -7,9 +7,9 @@
 本仓（GitHub 名 `dsh-mcp-adapter`）发布为 npm 包 **`@young1lin/dsh-mcp-adapter`**。这是 **mcp-only 分支**：一个 DSH（DeepSeek Harness）双面插件，把两件原本分开的东西合成了一个——
 
 1. **MCP 配置与挂载** —— 读 `.mcp.json`（Claude Code 那套格式）与自有的原生条目，按 global / project / session 三层合并，把每个会话该有的工具注册进**那个会话自己的 scope**。
-2. **MCP 运行时** —— 原 `local-mcp-gateway` 并入后的**引擎子进程**：托管 proc / http / echo 各类 MCP，带调用日志与命名的 bearer 令牌。
+2. **MCP 运行时** —— 原 `local-mcp-gateway` 并入后的**引擎子进程**：托管 proc / http / echo 各类 MCP，带调用日志；旧 bearer 令牌存储仅为兼容保留，不通过浏览器提供管理入口。
 
-`main` 分支还带着 SSH 隧道、数据库浏览器（mysql/redis/pg/mongo/rest 适配器）、流量环、备份/迁移与独立 `lmg` 网关形态；本分支把它们全部切除了，**只支持引擎模式**（配置无 `engine` 块时 `apply()` 直接报错）。
+`main` 分支还带着 SSH 隧道、数据库浏览器（mysql/redis/pg/mongo/rest 适配器）、流量环、备份/迁移与独立 `lmg` 网关形态；本分支把它们全部切除了，**只支持引擎模式**（默认开启，显式 `engine: false` 会报错）。设置页只保留 MCP 服务，不提供 Advanced。
 
 GUI 里叫「MCP 与连接」，挂在 `settings.section` 槽。宿主契约见 `docs/dsh-integration-contract.md`。
 
@@ -20,7 +20,7 @@ npm run typecheck      # tsc --noEmit，提交前必过
 npm run build          # tsc + esbuild 打 client.js
 npm run build:client   # 只重打浏览器半区
 
-npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，124 个
+npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，125 个
 npm run test:engine    # vitest run --config vitest.engine.config.ts —— 引擎，279 个
 ```
 
@@ -38,9 +38,8 @@ npm run test:engine    # vitest run --config vitest.engine.config.ts —— 引�
 DSH 宿主进程 (dsh web, :3080)
 │
 ├─ 宿主半区 src/host/ + src/runtime/ + src/config/
-│   ├─ unified.ts      插件激活入口：解析配置 → 决定端点 → spawn 引擎 → 挂 agent 平面
-│   ├─ api.ts          /dsh-mcp-manager/* 浏览器管理桥（loopback + 同源围栏）
-│   ├─ listener.ts     对外 MCP 端点开关与端口
+│   ├─ unified.ts      插件激活入口：解析配置 → 禁止外部 HTTP → spawn 引擎 → 挂 agent 平面
+│   ├─ api.ts          /dsh-mcp-manager/* 浏览器 MCP 管理桥（loopback + 同源围栏）
 │   └─ engine-supervisor.ts   引擎子进程的所有权、重生退避、孤儿回收
 │
 ├─ 浏览器半区 src/client/  （esbuild 打成 dist/client.js，id 注入自 package.json）
@@ -50,7 +49,7 @@ DSH 宿主进程 (dsh web, :3080)
 ```
 
 - 宿主与引擎之间是**行分隔 JSON over stdio 的私有管道**（协议在 `src/shared/ipc-protocol.ts`，方法表由 `engine/ipc-service.ts` 与 `engine/ipc-admin.ts` 合成，共 30 个：mcp 21 / tokens 5 / engine 4）。这条管道**永远不暴露给浏览器**，浏览器只能走 `/dsh-mcp-manager`；引擎也只认自己父进程的这对 fd。
-- 引擎的 HTTP 监听只服务两样东西：MCP 端点（`POST /<name>`，bearer 门禁）与 `/health` 探针。没有管理面板、没有 `/api`——一切管理都走私有 IPC。
+- 插件启动引擎时强制 `httpPort: 0`、`publicMcp: false`，子进程再次强制禁用 HTTP。历史 `listener.json` 不再读取，旧 `engine.publicMcp` / `engine.httpPort` 虽可解析但无效。引擎内部仍保留旧 token/HTTP 代码与已有密钥数据，不能通过此插件的浏览器桥调用。
 
 ### 谁是大脑
 
@@ -80,10 +79,10 @@ DSH 宿主进程 (dsh web, :3080)
 
 | 目录 | 内容 |
 | --- | --- |
-| `src/host/` | 插件激活、管理桥、端点决策 |
+| `src/host/` | 插件激活、MCP 管理桥 |
 | `src/runtime/` | 引擎监管、会话运行时（逻辑名 ↔ 实例名、租约、预热缓存） |
 | `src/config/` | 三层配置模型与门面 |
-| `src/client/` | 面板（`pages/` 下 mcp / session / advanced / entry-editor） |
+| `src/client/` | 设置页 MCP 服务及会话 MCP 标签页（`pages/` 下 mcp / session / entry-editor） |
 | `src/engine/` | 并入的引擎核心（registry / router / adapters / calls / tokens） |
 | `src/engine/adapters/` | proc / http / echo 适配器 + `proxy.ts`（远端代理层，工具/资源开关在这里生效） |
 | `src/shared/` | 两侧共用：IPC 协议、实例命名、视图顺序 |
@@ -96,7 +95,7 @@ DSH 宿主进程 (dsh web, :3080)
 1. **一个定义一个实例，不是一个名字一个实例。** `mcp.ensure` 按定义的稳定哈希（`stableDefinition`）匹配，命中就返回**已经托管它的那个实例**。调用方必须用**回包里的 `name`** 去寻址，不能用自己发出去的那个。这是"不同项目配了同一个 MCP，服务端只有一个实例"的实现方式。
 2. **实例名 vs 逻辑名。** `instanceNameFor(workspaceId, logical, def)` 会把 workspace 和 def 都编进名字；而工具/资源开关这类**每条目设置**必须按 `logicalKeyOf(name)` 存，才能在改定义、换实例之后活下来。
 3. **工具只在加载时注册，之后永不变。** 全局层在宿主激活时定一次，每会话层在会话创建时定一次。运行中改工具集会让 prompt cache 前缀全失效、并让会话历史与能力脱节。文件改动作用于**下一次**加载。
-4. **端点决策优先级：插件配置 > 面板存储 > 关闭。** 并且**端口被占用不能拖垮插件** —— 起不来就等于连能改端口的面板一起没了。`applyListener` 先真 bind 探测，占用就以"未发布 + 带原因"启动。探测必须用 bind，connect 探测分不清"没人监听"和"监听在别的网卡"。
+4. **外部端点永远关闭。** 不读取历史 `listener.json`，`publicMcp` / `httpPort` 均不能重新开启 HTTP；保留私有 IPC 管理桥、会话工具和 MCP 服务页面。不要清理用户存量密钥或配置文件。
 5. **密钥掩码往返。** 面板拿到的是 `••••••••` 哨兵；保存时 `unmaskBody` 从存储里还原真值。改配置保存路径时，先确认这条链路没断，否则用户的密钥会被哨兵覆写。
 6. **IPC 日志只记方法名、id 和错误码。** params / result 原样过管道，但绝不进日志行；域内脱敏归引擎的 mask 层管。
 7. **代理层的工具屏蔽要两头都做。** 列表按页过滤（分页归远端所有，空页也要保留 `nextCursor`），并且被屏蔽的工具**必须不可调用**，用统一措辞 `unknown tool: <name>` 拒绝。

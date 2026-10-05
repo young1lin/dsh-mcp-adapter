@@ -9,11 +9,10 @@ DeepSeek Harness（DSH）插件，只做一件事：把 MCP 服务器挂进每�
 - **MCP 服务**：新建/编辑/删除/重命名/导入、分组、排序、启停、健康与进程管理——底层是标准 `.mcp.json` 文件（全局 `~/.agents/.mcp.json`、项目 `.mcp.json`）+ 插件私有的加密 native 目录（proc/http/echo 及第三方适配器）。
 - **三层作用域**：global / project / session，墓碑式禁用、整条覆盖、同层冲突诊断、每会话快照。
 - **会话工具**：由**宿主**直接注册进每个会话自己的 agent 作用域（等待 setup 屏障）——按工作区隔离工具集，不泄漏到全局，单服务器失败不影响其他。**无需任何 preset 改动；本插件不新增 preset，也绝不要求你写 preset。**
-- **MCP 端点**：可选对外发布一个 HTTP 端口，统一代理所有已配置的 MCP，支持命名 Bearer 令牌给外部客户端。
-- **可观测**：每 MCP 调用日志（区分 `panel` 与 `dsh-session` 来源）、进程树内存、stderr 捕获。
+- **MCP 服务页**：保留配置、启停、工具/资源/提示词、工具调用与每 MCP 调用日志（区分 `panel` 与 `dsh-session` 来源），以及 stderr 捕获；不提供 Advanced 页、对外 HTTP MCP 端点、令牌管理或内存诊断。
 - **安全**：宿主与引擎间是私有 stdio IPC；浏览器只能走同源 `/dsh-mcp-manager` 桥（回环 + 同源信任围栏）；列表 DTO 全部掩码密钥，落盘密封（DPAPI/绑机器）。
 
-本分支**只支持引擎模式**：配置里没有 `engine: true` 时插件会报出明确的错误直接拒绝启动，而不是悄悄什么都不挂。
+本分支**只支持引擎模式**：引擎默认开启；只有显式写 `engine: false` 才会拒绝启动。
 
 ## 安装
 
@@ -28,13 +27,13 @@ dsh plugin add @young1lin/dsh-mcp-adapter   # 或把 checkout 软链进 ~/.dsh/p
   name: '@young1lin/dsh-mcp-adapter'
 ```
 
-**不需要 `engine` 键**：插件自有的引擎子进程默认开启（`engine` 块只用来调参数——`httpPort` / `publicMcp` / `storageDir` / `respawn` / `startupTimeoutMs` / `sessionTools`）。会话工具由宿主侧挂进每个会话自己的作用域——**不新增 preset、不改任何 preset，永远不需要**（`engine: false` 会被拒绝：本分支没有别的模式）。
+**不需要 `engine` 键**：插件自有的引擎子进程默认开启。仍可通过 `engine` 块设置 `storageDir` / `respawn` / `startupTimeoutMs` / `sessionTools`；旧配置中的 `httpPort` / `publicMcp` 为兼容起见仍可解析，但**不再生效**，旧 `listener.json` 也不会被读取；引擎始终不监听 HTTP，已有文件和密钥不会被删除。会话工具由宿主侧挂进每个会话自己的作用域——**不新增 preset、不改任何 preset**（`engine: false` 会被拒绝）。
 
-然后打开 **设置 → MCP 与连接**（以及会话里的 **MCP** 标签页）。
+然后打开 **设置 → MCP 与连接 → MCP 服务**（以及会话里的 **MCP** 标签页）；这里不再有 Advanced 标签。
 
 ### "引擎"是个什么东西？
 
-插件自己拉起的一个私有子进程（`dist/engine/ipc-main.js`）：托管你配置的全部 MCP（proc 子进程、http 代理）、记调用日志，只通过一条 stdio 私有管道和 dsh 宿主进程说话。某个 MCP 崩了，死的是引擎、自动重生——dsh 本体永远不被拖下水。它在包里，不用单独装、不对外开端口（除非你主动发布端点）。
+插件自己拉起的一个私有子进程（`dist/engine/ipc-main.js`）：托管你配置的全部 MCP（proc 子进程、http 代理）、记调用日志，只通过一条 stdio 私有管道和 dsh 宿主进程说话。某个 MCP 崩了，死的是引擎、自动重生——dsh 本体永远不被拖下水。它在包里，不用单独装，也不会打开 HTTP 端口。
 
 ### 源码安装（mcp-only 分支）
 

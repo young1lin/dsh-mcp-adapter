@@ -85,7 +85,7 @@
 
 - `window.__ModuleLoader__.load({id, factory(require)})`；factory 内 `require('react')` 可用；`module.exports={inject,apply}`；CSS `style[data-plugin-css]` 惯例不变。
 - package.json `dsh.client {platform, inject}` 仍被 manifest 校验读取（packages/client/modules/src/client/manifest.ts:196-210）；新增宿主注入 `window.__DSH_BOOT__` 启动图（manifest.ts:80、:300），对本插件透明。
-- apply(ctx) 依赖面 `['slots','locale','settingsScope']` 不变；`ctx.get('sessions')` 的 sessions 服务面（create/open/list.getSnapshot）仍按懒取防御。
+- apply(ctx) 依赖面 `['slots','locale','configForms']`（dsh 0.1.7 将 `settingsScope` 改名为 `configForms`，上游全部旧消费者同步替换；本插件未调用该服务，仅作激活顺序依赖）；`ctx.get('sessions')` 的 sessions 服务面（create/open/list.getSnapshot）仍按懒取防御。
 
 ## 9. dsh-mcp-client（已字段级核对：配置面不变）
 

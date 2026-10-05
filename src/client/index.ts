@@ -2,8 +2,7 @@
  * The browser half (bundled by esbuild into dist/client.js): one
  * __ModuleLoader__ factory registering
  *  - a「MCP 与连接」settings section (id mcp-connections — NOT Requests),
- *    with the workbench + advanced sub-views as tabs (each a STABLE component
- *    identity — conditional direct calls of hook-using pages broke hook order),
+ *    with the MCP services workbench only,
  *  - a conversation「MCP」tab bound to the REAL sessionId prop, showing
  *    snapshot vs current vs pending session overrides.
  * Host data flows only through the same-origin /dsh-mcp-manager bridge.
@@ -12,7 +11,6 @@ import { NS, en, zh } from './i18n.js'
 import { css, kit, type ReactLike } from './ui.js'
 import { paintNavIcon } from './nav-icon.js'
 import { makeMcpWorkbench } from './pages/mcp.js'
-import { makeAdvancedPage } from './pages/advanced.js'
 import { makeSessionTab, type StartNext } from './pages/session.js'
 
 // window.__ModuleLoader__ is declared in src/globals.d.ts (repo-wide).
@@ -103,29 +101,23 @@ window.__ModuleLoader__!.load({
     const React = require('react') as ReactLike
     const k = kit(React)
 
-    // One STABLE component identity per page — created ONCE per React/kit
-    // binding. Rendering these through createElement (never calling the page
-    // functions directly as conditional children) is what keeps every page's
-    // hooks in their own component instance.
+    // Keep hook-using pages as stable component identities; the settings view
+    // exposes only MCP services (no tokens, public endpoint or diagnostics).
     const McpPane = makeMcpWorkbench(React, k)
-    const AdvancedPane = makeAdvancedPage(React, k)
     const SessionTab = makeSessionTab(React, k)
 
-    /** The settings body: tabbed workbench (MCP / advanced). */
     function Workbench(props: { t?: T }) {
       const t = props.t ?? ((key: string) => key)
-      const [tab, setTab] = React.useState<'mcp' | 'advanced'>('mcp')
       return k.h('div', { className: 'mmc-root', style: { padding: '16px', overflow: 'auto', height: '100%' } },
-        k.tabs([
-          { key: 'mcp', label: t('entries') },
-          { key: 'advanced', label: t('advanced') },
-        ], tab, (x) => setTab(x as typeof tab)),
-        tab === 'mcp' ? k.h(McpPane, { t }) : k.h(AdvancedPane, { t }),
+        k.h(McpPane, { t }),
       )
     }
 
     const module = { exports: {} as Record<string, unknown> }
-    module.exports.inject = ['slots', 'locale', 'settingsScope']
+    // dsh 0.1.7 renamed the client settings base service settingsScope →
+    // configForms (every shipped consumer swapped the name); we never call
+    // the service — the injection only orders activation after ui-settings.
+    module.exports.inject = ['slots', 'locale', 'configForms']
     module.exports.apply = (ctx: ClientCtx) => {
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'mcp-connections: dictionaries')
       const t = ctx.locale.bind(NS)

@@ -2,7 +2,7 @@
   "name": "@young1lin/dsh-mcp-adapter",
   "version": "0.3.3",
   "type": "module",
-  "description": "DeepSeek Harness plugin unifying MCP servers, SSH tunnels and connections management (mounts standard .mcp.json plus an embedded managed engine).",
+  "description": "DeepSeek Harness plugin unifying MCP servers (mounts standard .mcp.json plus an embedded managed engine).",
   "main": "dist/index.js",
   "exports": {
     ".": {
@@ -47,8 +47,7 @@
     "mcp-json",
     "adapter",
     "plugin",
-    "local-mcp-gateway",
-    "ssh-tunnel"
+    "local-mcp-gateway"
   ],
   "repository": {
     "type": "git",

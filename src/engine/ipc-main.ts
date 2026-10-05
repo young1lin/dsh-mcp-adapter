@@ -6,7 +6,6 @@
  *
  * Environment contract (set by the host supervisor):
  *   MCP_GATEWAY_HOME       the plugin-private data dir (mcp-manager/engine)
- *   MCP_GATEWAY_PORT       the HTTP listener port; "0" = ephemeral (default)
  *   MCP_GATEWAY_MASTER_KEY 64-hex key the host sealed; binds all engine state
  *                           files to THIS plugin instance's key
  *   DSH_MCP_OWNER          the host PID, for orphan identification
@@ -28,14 +27,12 @@ import { log } from "./log.js";
 console.log = (...args: unknown[]) => { console.error(...args) }
 
 async function main(): Promise<void> {
-  const portRaw = process.env.MCP_GATEWAY_PORT
-  const port = portRaw !== undefined && /^\d+$/.test(portRaw) ? Number(portRaw) : 0
-
+  // Defense in depth: this plugin child is IPC-only even if a stale host
+  // config or inherited environment asks to publish a listener.
   const engine = await createEngine({
-    port,
+    port: 0,
     privateMode: true,
-    publicMcp: process.env.DSH_MCP_PUBLIC === "1",
-    publicNames: JSON.parse(process.env.DSH_MCP_PUBLIC_NAMES ?? "[]") as string[],
+    publicMcp: false,
     seedFirstRun: true,        // the plugin's engine dir is first-run seeded
   })
 

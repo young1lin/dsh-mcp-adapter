@@ -16,7 +16,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -62,16 +62,24 @@ function fakeSupervisor() {
  * @param engineBlock - the `engine` config block under test.
  * @returns the fake host context the plugin mounted on.
  */
-async function activate(t, engineBlock) {
+async function activate(t, engineBlock, storedListener) {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-unified-'))
-  const resolved = validateConfig({ engine: { storageDir: join(dir, 'store'), ...engineBlock }, globalFile: join(dir, 'agents.json') })
+  const storageDir = join(dir, 'store')
+  if (storedListener !== undefined) {
+    mkdirSync(storageDir)
+    writeFileSync(join(storageDir, 'listener.json'), JSON.stringify(storedListener))
+  }
+  const resolved = validateConfig({ engine: { storageDir, ...engineBlock }, globalFile: join(dir, 'agents.json') })
   const ctx = fakeHostContext()
   t.after(() => {
     ctx.dispose()
     publishRuntime(undefined) // module singleton: a leak fails the NEXT activation
     rmSync(dir, { recursive: true, force: true })
   })
-  await startUnifiedHost(ctx, resolved, () => fakeSupervisor())
+  await startUnifiedHost(ctx, resolved, (options) => {
+    ctx.spawnOptions = options
+    return fakeSupervisor()
+  })
   return ctx
 }
 
@@ -91,10 +99,23 @@ test('unified host: the mounted barrier continues the agent loop waterfall untou
   assert.deepEqual(out, decision)
 })
 
-test('unified host: engine.sessionTools false leaves the plane to the preset row', async (t) => {
+test('unified host: engine.sessionTools false disables the optional session plane', async (t) => {
   const ctx = await activate(t, { sessionTools: false })
   assert.equal(ctx.handlers.has('agent/created'), false, 'no host-mounted registration barrier')
   assert.equal(ctx.handlers.has('agent/pre-step'), false, 'no host-mounted step barrier')
+})
+
+test('unified host: legacy config and persisted listener settings cannot publish HTTP', async (t) => {
+  const ctx = await activate(t, { publicMcp: true, httpPort: 23456 }, { enabled: true, port: 22345 })
+  assert.equal(ctx.spawnOptions.publicMcp, false)
+  assert.equal(ctx.spawnOptions.httpPort, 0)
+  assert.ok(ctx.handlers.has('agent/created'), 'session tools still mount')
+})
+
+test('unified host: legacy persisted listener alone cannot publish HTTP', async (t) => {
+  const ctx = await activate(t, {}, { enabled: true, port: 22345 })
+  assert.equal(ctx.spawnOptions.publicMcp, false)
+  assert.equal(ctx.spawnOptions.httpPort, 0)
 })
 
 test('unified host: a second activation in one process is refused instead of doubling the engine', async (t) => {

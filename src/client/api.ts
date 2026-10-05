@@ -115,20 +115,6 @@ export interface SetEnabledBody {
 
 // --- engine-plane DTOs ------------------------------------------------------------------------
 
-export interface TokenRow {
-  id: string
-  label: string
-  createdAt: string
-  lastUsedAt?: string
-}
-
-export interface TokenSecret {
-  id: string
-  label: string
-  secret: string
-  createdAt?: string
-}
-
 /**
  * One row of an MCP's call log.
  *
@@ -193,26 +179,6 @@ export interface CallsPage {
   /** The hosting adapter's kind and state — what an EMPTY stderr has to be read against. */
   type?: string
   lifecycle?: string
-}
-
-/**
- * The one HTTP endpoint every MCP is served through, as the panel sees it.
- * `locked` means the plugin config decided it, so the switch is a display of
- * someone else's decision and must not pretend to be editable.
- */
-export interface ListenerState {
-  enabled: boolean
-  port: number
-  locked: boolean
-  /** What the panel stored, when it has stored anything. */
-  stored?: { enabled: boolean; port: number }
-  /** Set on a save: the supervisor binds at the next plugin load, not now. */
-  restartRequired?: boolean
-  /** What the endpoint is doing RIGHT NOW, which is not always the intent. */
-  active?: boolean
-  activePort?: number
-  /** Why the intent and the outcome differ — a port someone else holds. */
-  problem?: string
 }
 
 /** One host workspace (GET /workspaces): id is the ONLY value ever sent back. */
@@ -317,7 +283,6 @@ export const api = {
 
   // --- engine plane -----------------------------------------------------------------------------
   engine: () => call('GET', '/engine') as Promise<Record<string, unknown>>,
-  memory: (tree: boolean) => call('GET', '/memory', undefined, tree ? { tree: '1' } : {}) as Promise<Record<string, unknown>>,
   mcp: (name: string, action: string, cursor?: string) => call('GET', '/mcp/' + encodeURIComponent(name) + '/' + action, undefined, cursor !== undefined ? { cursor } : {}) as Promise<Record<string, unknown>>,
   mcpPost: (name: string, action: string, body: Record<string, unknown>, scope?: ScopeIds) => call('POST', '/mcp/' + encodeURIComponent(name) + '/' + action, body, scopeQuery(scope)) as Promise<Record<string, unknown>>,
 
@@ -340,15 +305,6 @@ export const api = {
   mcpCalls: (name: string, page = 0) => call('GET', '/mcp/' + encodeURIComponent(name) + '/calls', undefined, { page: String(page) }) as Promise<CallsPage>,
   mcpCall: (name: string, seq: number) => call('GET', '/mcp/' + encodeURIComponent(name) + '/calls/' + String(seq)) as Promise<{ name: string; call: Record<string, unknown> }>,
 
-  // --- tokens / endpoint -------------------------------------------------------------------------
-  tokens: () => call('GET', '/tokens') as Promise<{ tokens: TokenRow[]; tokenEnv: string }>,
-  tokenCreate: (label: string) => call('POST', '/tokens', { label }) as Promise<TokenSecret>,
-  tokenSecret: (id: string) => call('GET', '/tokens/' + encodeURIComponent(id) + '/secret') as Promise<TokenSecret>,
-  tokenRotate: (id: string) => call('POST', '/tokens/' + encodeURIComponent(id) + '/rotate') as Promise<TokenSecret>,
-  tokenRevoke: (id: string) => call('DELETE', '/tokens/' + encodeURIComponent(id)) as Promise<{ ok: boolean }>,
-  /** The MCP endpoint: whether it is published, and on what port. */
-  listener: () => call('GET', '/listener') as Promise<ListenerState>,
-  listenerSave: (enabled: boolean, port: number) => call('POST', '/listener', { enabled, port }) as Promise<ListenerState>,
 }
 
 /** True when an api failure is the bridge's "no route" answer (endpoint not wired yet). */

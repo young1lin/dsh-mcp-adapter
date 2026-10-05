@@ -54,6 +54,21 @@ test('supervisor: spawn, handshake, ping, status, graceful dispose', async () =>
   }
 })
 
+test('plugin-owned engine refuses HTTP even if legacy supervisor options request publication', async () => {
+  const dir = storage()
+  const supervisor = createEngineSupervisor({ storageDir: dir, publicMcp: true, httpPort: 0 }, { info: () => {}, warn: () => {} })
+  try {
+    const ready = await supervisor.ensure()
+    assert.equal(ready.httpPort ?? 0, 0, 'child must not bind even an ephemeral HTTP port')
+    assert.equal(supervisor.httpOrigin(), undefined)
+    const status = await supervisor.request('engine.status', undefined, { timeoutMs: 10000 })
+    assert.ok(Array.isArray(status.mcps), 'private IPC still works')
+  } finally {
+    await supervisor.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('supervisor: request against a disposed engine rejects E_DIED, not a hang', async () => {
   const dir = storage()
   const supervisor = createEngineSupervisor({ storageDir: dir }, { info: () => {}, warn: () => {} })

@@ -31,27 +31,12 @@ export interface WebServerFace {
   }): () => void
 }
 
-/** Everything the bridge needs. */
-import { portFree, readListener, resolveListener, writeListener, type ListenerConfig, type ListenerState } from './listener.js'
-
+/** Dependencies needed by the MCP services page and conversation tab. */
 export interface BridgeDeps {
   config: ConfigService
   engine: () => EngineSupervisor | undefined
-  /** Plugin storage root (migration target). */
+  /** Plugin storage root for session snapshots and view metadata. */
   storageDir: string
-  /**
-   * The plugin config's own say on the MCP endpoint, when it has one. Read
-   * through a function because the config is re-resolved on reload, and a
-   * stale snapshot would tell the panel it owns a switch the config has since
-   * taken over. Absent means nothing in the config fixes it.
-   */
-  listenerConfig?: () => ListenerConfig | undefined
-  /**
-   * What the supervisor actually did with it at load time — including the
-   * `problem` when the chosen port was taken. The intent and the outcome are
-   * different facts, and the panel has to show the one the user is living with.
-   */
-  listenerActual?: () => (ListenerState & { problem?: string }) | undefined
   workspaces?: () => Array<{ id: string; path: string; title?: string }>
 }
 
@@ -397,46 +382,11 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
   const engine = deps.engine()
   if (method === 'GET' && path === '/engine') {
     if (engine === undefined) return { off: true }
-    return engine.request('engine.status', undefined, { timeoutMs: 30000 })
+    const status = await engine.request('engine.status', undefined, { timeoutMs: 30000 }) as { mcps?: unknown[] }
+    // MCP services needs only the list: do not expose endpoint or token metadata.
+    return { mcps: status.mcps ?? [] }
   }
-  // --- the MCP endpoint: one master switch and one port ---
-  // Answered with the engine down on purpose: "it is off" is exactly when
-  // someone comes here to turn it on.
-  if (method === 'GET' && path === '/listener') {
-    const stored = readListener(deps.storageDir)
-    const state = resolveListener(deps.listenerConfig?.(), stored)
-    const actual = deps.listenerActual?.()
-    return {
-      ...state,
-      ...(stored !== undefined ? { stored } : {}),
-      // The intent is what the switch shows; `active` and `problem` are what
-      // the user is actually living with, which is not always the same thing.
-      ...(actual !== undefined ? { active: actual.enabled, activePort: actual.port } : {}),
-      ...(actual?.problem !== undefined ? { problem: actual.problem } : {}),
-    }
-  }
-  if (method === 'POST' && path === '/listener') {
-    const state = resolveListener(deps.listenerConfig?.(), readListener(deps.storageDir))
-    // A config file outranks a click. Refusing loudly beats writing a setting
-    // that would never be read.
-    if (state.locked) throw new Error('the MCP endpoint is fixed by the plugin config (engine.publicMcp / engine.httpPort)')
-    const body = (req.body ?? {}) as { enabled?: unknown; port?: unknown }
-    const saved = writeListener(deps.storageDir, { enabled: body.enabled, port: body.port })
-    // Say it at the click, not at the next restart. The port is only checked,
-    // never claimed here — this is a warning about what the engine will meet,
-    // and the user may be about to free it.
-    const actual = deps.listenerActual?.()
-    const ours = actual?.enabled === true && actual.port === saved.port
-    const busy = saved.enabled && !ours && !(await portFree(saved.port))
-    // Applied by the supervisor at the next apply, not here: rebinding a live
-    // listener from inside the request that asked for it is not something to do.
-    return { ...saved, locked: false, restartRequired: true, ...(busy ? { problem: 'port ' + String(saved.port) + ' is already in use' } : {}) }
-  }
-
   if (engine === undefined) throw new Error('engine is not enabled')
-  if (method === 'GET' && path === '/memory') {
-    return engine.request('engine.memory', { tree: req.query.get('tree') === '1' }, { timeoutMs: 60000 })
-  }
 
   // Probe a DRAFT definition. Name-less on purpose: nothing is saved or
   // hosted, so this is the one MCP route that does not address an entry.
@@ -526,41 +476,6 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
         return engine.request('mcp.setResourcesEnabled', { name, enabled: body.enabled === true }, { timeoutMs: 30000 })
       }
     }
-  }
-
-  // --- advanced plane: engine origin + default bearer for external clients ---
-  if (method === 'GET' && path === '/creds') {
-    // lmg creds 等效：默认令牌 + 引擎 origin（供外部客户端配置）。
-    if (engine === undefined) throw new Error('engine is not enabled')
-    const bearer = await engine.request('engine.bearer', undefined, { timeoutMs: 30000 }) as { secret?: string }
-    const status = await engine.request('engine.status', undefined, { timeoutMs: 30000 }) as { port?: number }
-    return { url: 'http://127.0.0.1:' + String(status.port ?? 0), token: bearer.secret ?? '' }
-  }
-  if (method === 'GET' && path === '/token/default') {
-    // EXPLICIT reveal (the user pressed the button); same policy as the
-    // engine's token methods — an explicit act, never list payload.
-    return engine.request('engine.bearer', undefined, { timeoutMs: 30000 })
-  }
-
-  // --- tokens plane (named bearers; every secret read is an explicit action) ---
-  if (method === 'GET' && path === '/tokens') {
-    const out = await engine.request('tokens.list', undefined, { timeoutMs: 30000 }) as { tokens?: unknown[] }
-    return { tokens: out.tokens ?? [], tokenEnv: 'MCP_GATEWAY_TOKEN' }
-  }
-  if (method === 'POST' && path === '/tokens') {
-    return engine.request('tokens.create', { label: String(body.label ?? '') }, { timeoutMs: 30000 })
-  }
-  const tokenSecretMatch = /^\/tokens\/([^/]+)\/secret$/.exec(path)
-  if (tokenSecretMatch !== null && method === 'GET') {
-    return engine.request('tokens.reveal', { id: decodeURIComponent(tokenSecretMatch[1]!) }, { timeoutMs: 30000 })
-  }
-  const tokenRotateMatch = /^\/tokens\/([^/]+)\/rotate$/.exec(path)
-  if (tokenRotateMatch !== null && method === 'POST') {
-    return engine.request('tokens.rotate', { id: decodeURIComponent(tokenRotateMatch[1]!) }, { timeoutMs: 30000 })
-  }
-  const tokenDeleteMatch = /^\/tokens\/([^/]+)$/.exec(path)
-  if (tokenDeleteMatch !== null && method === 'DELETE') {
-    return engine.request('tokens.revoke', { id: decodeURIComponent(tokenDeleteMatch[1]!) }, { timeoutMs: 30000 })
   }
 
   throw new Error('no route for ' + method + ' ' + path)

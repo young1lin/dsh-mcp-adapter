@@ -14,19 +14,9 @@ const CONFIG_KEYS = new Set(['project', 'projectRoot', 'globalFile', 'projectFil
 
 /** The plugin-owned engine block: spawns dist/engine/ipc-main.js under this plugin. */
 export interface EngineEmbedConfig {
-  /**
-   * The port the MCP endpoint listens on. Omitted means DEFAULT_PORT (19999)
-   * when `publicMcp` is on, and an ephemeral port when it is not: a private
-   * engine is reached over the parent's IPC pipe, so its port number is an
-   * implementation detail nobody should have to know.
-   */
+  /** Deprecated, accepted for old configs but ignored: this plugin never opens an HTTP endpoint. */
   httpPort?: number
-  /**
-   * Serve the MCP endpoint to anything that can reach the port — the master
-   * switch. Off (the default), the engine still binds loopback for the host's
-   * own use but publishes nothing; on, one HTTP endpoint fronts every
-   * configured MCP and the server side decides which of them a caller gets.
-   */
+  /** Deprecated, accepted for old configs but ignored: the engine is IPC-only. */
   publicMcp?: boolean
   respawn: boolean
   storageDir?: string
@@ -34,10 +24,8 @@ export interface EngineEmbedConfig {
   /**
    * Register each session's MCP tools from the HOST mount (default true).
    *
-   * On, a session gets its tools under whatever agent preset it runs, so a
-   * normal install needs no preset authoring at all. Off, only the preset row
-   * `dsh-mcp-json-adapter/agent` mounts the plane — for deployments that want
-   * the tools on one preset instead of every one.
+   * On, the host installs each session's tools without touching any preset.
+   * Off, the host does not register session tools.
    */
   sessionTools: boolean
 }

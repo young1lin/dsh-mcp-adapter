@@ -115,21 +115,19 @@ function stubFetch(handler) {
   return calls
 }
 
-test('api: scope ids ride the query string; tokens use the right verbs and paths', async () => {
+test('api: scope ids and MCP calls use the expected bridge paths, without Advanced methods', async () => {
   const calls = stubFetch(() => ({ status: 200, json: {} }))
   await apiMod.api.preview({ ws: 'ws1', ss: 'sess-1' })
   assert.equal(calls[0].url, '/preview?ws=ws1&ss=sess-1')
   await apiMod.api.saveEntry({ level: 'session', source: 'session', name: 'n', def: null, expectedRevision: 'r' }, { ss: 'sess-1' })
   assert.equal(calls[1].url, '/entry?ss=sess-1')
   assert.equal(calls[1].method, 'POST')
-  await apiMod.api.tokenRevoke('default')
-  assert.equal(calls[2].url, '/tokens/default')
-  assert.equal(calls[2].method, 'DELETE')
-  await apiMod.api.tokenRotate('t1')
-  assert.equal(calls[3].url, '/tokens/t1/rotate')
   await apiMod.api.mcpCalls('alpha', 3)
-  assert.equal(calls[4].url, '/mcp/alpha/calls?page=3')
-  assert.equal(apiMod.isNoRoute({ message: 'no route for GET /tokens' }), true)
+  assert.equal(calls[2].url, '/mcp/alpha/calls?page=3')
+  for (const method of ['tokens', 'tokenCreate', 'tokenSecret', 'tokenRotate', 'tokenRevoke', 'listener', 'listenerSave', 'memory']) {
+    assert.equal(method in apiMod.api, false, method + ' is not exported to the client')
+  }
+  assert.equal(apiMod.isNoRoute({ message: 'no route for GET /missing' }), true)
   assert.equal(apiMod.isNoRoute({ message: 'other' }), false)
 })
 
@@ -348,7 +346,7 @@ async function loadClient(mini, ctxExtra = {}) {
   return { registrations }
 }
 
-test('pages: tab switches across both panes never change one component hook count', { skip: bundleSkipped }, async () => {
+test('pages: settings shows only MCP services without the Advanced tab', { skip: bundleSkipped }, async () => {
   const mini = makeMiniReact()
   stubFetch((call) => {
     if (call.url.startsWith('/preview')) return { status: 200, json: previewDoc() }
@@ -360,12 +358,11 @@ test('pages: tab switches across both panes never change one component hook coun
   assert.ok(section !== undefined, 'settings.section registered')
   mini.render(mini.createElement(section.component, { t: (key) => key }))
   await flush()
-  assert.ok(findText(mini, 'alpha'), 'workbench lists entries')
-  for (const label of ['advanced', 'entries']) {
-    await clickButton(mini, label)   // must not throw a HOOK ORDER VIOLATION
-    assert.equal(mini.renderError(), null, 'no render error on tab ' + label)
-  }
-  assert.ok(findText(mini, 'alpha'), 'back on the MCP pane, entries render again')
+  assert.ok(findText(mini, 'entries'), 'MCP services heading remains visible')
+  assert.ok(findText(mini, 'alpha'), 'MCP services still lists entries')
+  assert.equal(mini.renderError(), null)
+  assert.equal(findAll(mini.tree(), (el) => el.type === 'button' && textOfEl(el) === 'advanced').length, 0)
+  assert.ok(!findText(mini, 'advancedIntro'), 'Advanced content is not rendered')
 })
 
 test('pages (R5): editor keeps the OPEN revision, never previews on save, and a 409 keeps the draft', { skip: bundleSkipped }, async () => {
@@ -489,7 +486,7 @@ test('pages: session tab disables start-next with an explanation when the host f
   assert.ok(findText(mini, 'startNextUnavailable'), 'explanation shown')
 })
 
-test('pages (wired bridge): every pane renders REAL data end-to-end — no bridgePending anywhere', { skip: bundleSkipped }, async () => {
+test('pages (wired bridge): MCP services renders data and lifecycle actions without Advanced requests', { skip: bundleSkipped }, async () => {
   const mini = makeMiniReact()
   const seenUrls = []
   stubFetch((call) => {
@@ -499,10 +496,6 @@ test('pages (wired bridge): every pane renders REAL data end-to-end — no bridg
     if (url.startsWith('/engine')) return { status: 200, json: { off: true } }
     if (url.startsWith('/workspaces')) return { status: 200, json: { items: [{ id: 'ws1', path: 'C:/ws/one' }] } }
     if (url.startsWith('/session')) return { status: 200, json: { sessionId: 'sess-1', revision: 'r', snapshot: { revision: 's', registeredAt: 'R-AT', tools: ['mcp__alpha__query'] } } }
-    if (url.startsWith('/memory')) return { status: 200, json: { gatewayMb: 12 } }
-    if (url.startsWith('/listener')) return { status: 200, json: { enabled: false, port: 0, locked: false } }
-    if (url.startsWith('/tokens/t1/secret')) return { status: 200, json: { id: 't1', label: 'l', secret: 'SEC' } }
-    if (url.startsWith('/tokens')) return { status: 200, json: { tokens: [{ id: 'default', label: 'default', createdAt: 'C-AT' }], tokenEnv: 'MCP_GATEWAY_TOKEN' } }
     if (/^\/mcp\/alpha\/calls\//.test(url)) return { status: 200, json: { call: { seq: 9, tool: 'x', output: 'FULL' } } }
     if (/^\/mcp\/alpha\/calls/.test(url)) return { status: 200, json: { name: 'alpha', calls: [{ seq: 9, ts: 'TS', tool: 'query', preview: 'PV' }], page: 0, more: false } }
     if (/^\/mcp\/alpha\/(status|tools|resources|prompts)/.test(url)) return { status: 200, json: { lifecycle: 'started', state: 'up', type: 'proc', tools: [{ name: 'query', description: 'd' }] } }
@@ -515,13 +508,7 @@ test('pages (wired bridge): every pane renders REAL data end-to-end — no bridg
   await flush()
   assert.ok(findText(mini, 'alpha'), 'workbench entries render')
 
-  // advanced pane: tokens + the MCP endpoint switch all wired
-  await clickButton(mini, 'advanced')
-  assert.ok(findText(mini, 'default'), 'token row shown')
-  assert.ok(!findText(mini, 'bridgePending'), 'advanced pane fully wired')
-
-  // MCP pane: detail with lifecycle buttons + a populated calls tab
-  await clickButton(mini, 'entries')
+  // MCP services: detail with lifecycle buttons + a populated calls tab
   await clickButton(mini, 'alpha')
   assert.ok(findText(mini, 'started'), 'status tab shows lifecycle')
   // Lifecycle is rare enough not to spend the header's width on: it lives in
@@ -534,8 +521,8 @@ test('pages (wired bridge): every pane renders REAL data end-to-end — no bridg
   await clickButton(mini, 'calls')
   assert.ok(findText(mini, 'query'), 'calls tab lists the tool call')
   assert.ok(!findText(mini, 'bridgePending'), 'calls tab fully wired')
-  // no route ever hit the unwired 500 branch
-  assert.ok(seenUrls.every((u) => !u.startsWith('GET /session') || true), 'sanity')
+  assert.ok(seenUrls.every((u) => !/\/(?:tokens|token\/default|listener|memory|creds)(?:[/?]|$)/.test(u)),
+    'MCP services never fetches Advanced-only routes')
 })
 
 function previewDoc(revision = 'rev-open-0001') {
