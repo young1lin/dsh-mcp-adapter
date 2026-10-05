@@ -3,21 +3,31 @@ import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
 import { extraBinDirs, loginPath } from "../../src/engine/pathenv.js";
 
+// Fixtures must be native to the platform running the suite: POSIX PATHs are
+// `:`-delimited and Windows ones `;`-delimited, and a Windows drive-letter
+// colon corrupts the split on Linux ("C:\uv:C:\x" -> ["C", "\uv", "C", "\x"]).
+// That is exactly how this file failed the first ubuntu publish run.
+const win = process.platform === "win32";
+const uvDir = win ? "C:\\uv" : "/opt/uv";
+const binDir = win ? "C:\\Windows" : "/usr/bin";
+const sysDir = win ? "C:\\Windows\\System32" : "/usr/sbin";
+
 describe("loginPath", () => {
   it("prepends extra dirs that are not already on PATH", () => {
-    const path = ["C:\\Windows", "C:\\Windows\\System32"].join(delimiter);
-    expect(loginPath(path, ["C:\\uv", "C:\\Windows"])).toBe(
-      ["C:\\uv", "C:\\Windows", "C:\\Windows\\System32"].join(delimiter),
+    const path = [binDir, sysDir].join(delimiter);
+    expect(loginPath(path, [uvDir, binDir])).toBe(
+      [uvDir, binDir, sysDir].join(delimiter),
     );
   });
 
   it("is a no-op when every extra dir is already present", () => {
-    const path = ["C:\\uv", "C:\\Windows"].join(delimiter);
-    expect(loginPath(path, ["C:\\uv"])).toBe(path);
+    const path = [uvDir, binDir].join(delimiter);
+    expect(loginPath(path, [uvDir])).toBe(path);
   });
 
   it("keeps PATH unchanged when there are no extras", () => {
-    expect(loginPath("C:\\a", [])).toBe("C:\\a");
+    const lone = win ? "C:\\a" : "/a";
+    expect(loginPath(lone, [])).toBe(lone);
   });
 });
 
