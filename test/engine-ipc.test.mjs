@@ -123,7 +123,7 @@ test('supervisor: aborting a request MID-FLIGHT settles E_CANCELLED, never hangs
     const controller = new AbortController()
     const pending = supervisor.request(
       'mcp.ensure',
-      { name: 'mute-child', def: { type: 'proc', command: '"' + process.execPath + '" -e "setTimeout(()=>{},30000)"' }, start: true },
+      { name: 'mute-child', def: { type: 'proc', command: '"' + process.execPath + '" -e "setTimeout(()=>{},5000)"' }, start: true },
       { timeoutMs: 5000, signal: controller.signal },
     )
     setTimeout(() => controller.abort(), 300)
