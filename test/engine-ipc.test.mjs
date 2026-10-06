@@ -96,6 +96,51 @@ test('supervisor: an unknown method answers E_UNKNOWN_METHOD over the pipe', asy
   }
 })
 
+test('supervisor: a request whose signal is ALREADY aborted settles E_CANCELLED, no hang', async () => {
+  const dir = storage()
+  const supervisor = createEngineSupervisor({ storageDir: dir }, { info: () => {}, warn: () => {} })
+  try {
+    await supervisor.ensure()
+    const signal = AbortSignal.abort()
+    await assert.rejects(
+      () => supervisor.request('ping', undefined, { timeoutMs: 5000, signal }),
+      (err) => err.code === 'E_CANCELLED',
+      'a pre-aborted signal must reject its request instead of stranding it',
+    )
+  } finally {
+    await supervisor.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('supervisor: aborting a request MID-FLIGHT settles E_CANCELLED, never hangs', async () => {
+  const dir = storage()
+  const supervisor = createEngineSupervisor({ storageDir: dir }, { info: () => {}, warn: () => {} })
+  try {
+    await supervisor.ensure()
+    // A proc whose child spawns but never speaks MCP: the engine's ensure sits
+    // in the 60s handshake until the cancel frame aborts it.
+    const controller = new AbortController()
+    const pending = supervisor.request(
+      'mcp.ensure',
+      { name: 'mute-child', def: { type: 'proc', command: '"' + process.execPath + '" -e "setTimeout(()=>{},30000)"' }, start: true },
+      { timeoutMs: 5000, signal: controller.signal },
+    )
+    setTimeout(() => controller.abort(), 300)
+    const started = Date.now()
+    await assert.rejects(
+      () => pending,
+      (err) => err.code === 'E_CANCELLED',
+      'an aborted in-flight request must settle instead of waiting for the engine reply it will never match',
+    )
+    // It settled via the abort path, not by burning the whole timeout.
+    assert.ok(Date.now() - started < 4500, 'settled promptly after abort')
+  } finally {
+    await supervisor.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('protocol: parseFrame accepts well-formed frames and rejects noise', () => {
   const ready = parseFrame('{"t":"ready","protocol":1,"version":"0.0.0","pid":1}')
   assert.equal(ready.t, 'ready')

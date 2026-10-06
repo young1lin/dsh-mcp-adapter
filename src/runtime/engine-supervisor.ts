@@ -368,15 +368,25 @@ export function createEngineSupervisor(options: SupervisorOptions, sinks: Superv
       pending.set(id, { resolve, reject, timer })
       child!.stdin!.write(encodeFrame({ t: "req", id, method, ...(params === undefined ? {} : { params }) }) + "\n")
       // Cancellation bridge (P3.8): the caller's signal travels as a cancel
-      // frame; the engine aborts what it can and answers E_CANCELLED.
+      // frame; the engine aborts what it can and answers E_CANCELLED. The
+      // caller-side promise MUST settle HERE, not when that reply comes back:
+      // the reply finds the pending entry already deleted and is dropped, so
+      // waiting for it left the request pending forever — and the host's tool
+      // scheduler awaits a started body to quiescence before recording
+      // ABORTED, so one cancelled slow call wedged its entire step.
       const signal = opts?.signal
       if (signal !== null && signal !== undefined && typeof (signal as AbortSignal).addEventListener === "function") {
-        (signal as AbortSignal).addEventListener("abort", () => {
+        const cancel = (): void => {
           if (pending.delete(id)) {
             clearTimeout(timer)
-            child?.stdin?.write(encodeFrame({ t: "cancel", id }) + "\n")
+            reject(Object.assign(new Error("engine request " + method + " cancelled"), { code: "E_CANCELLED" }))
+            // Best effort: a pipe that already died must not turn this into an
+            // uncaught exception in the host process.
+            try { child?.stdin?.write(encodeFrame({ t: "cancel", id }) + "\n") } catch { /* pipe gone */ }
           }
-        }, { once: true })
+        }
+        if ((signal as AbortSignal).aborted) cancel()
+        else (signal as AbortSignal).addEventListener("abort", cancel, { once: true })
       }
     })
   }
