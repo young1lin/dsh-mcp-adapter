@@ -22,8 +22,7 @@ Open the conversation **MCP** tab. **This session** shows its frozen registered 
 
 ![Session MCP tab showing frozen services, expandable tools and a separate new-session configuration preview](<assets/images/MCP-2.png>)
 
-<details>
-<summary>Configuration walkthrough: choose a source layer and add an MCP</summary>
+### Configuration walkthrough: choose a source layer and add an MCP
 
 **1. Choose where to save.** Open **Settings → MCP & Connections → MCP services → Add MCP**, then select a source layer. Standard layers use the usual `mcpServers` format; the native layer uses engine definitions. Claude and .agents sources are separate destinations, and edits stay in the chosen source.
 
@@ -32,8 +31,6 @@ Open the conversation **MCP** tab. **This session** shows its frozen registered 
 **2. Paste a definition, review the form, then test and save.** The JSON editor accepts a single server definition or a full `mcpServers` document, automatically selects the first entry and fills its name. Use bulk import when you want all entries. The example below uses Microsoft's public documentation endpoint; the faint Authorization text is an environment-variable placeholder, not a saved credential. Keep optional fields under **Advanced settings** and use **Test** to check reachability before saving.
 
 ![HTTP MCP editor populated from a mcpServers document with optional advanced settings](<assets/images/MCP-0.png>)
-
-</details>
 
 ## Install
 
