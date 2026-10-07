@@ -1,6 +1,6 @@
-# @young1lin/dsh-mcp-adapter (mcp-only branch)
+# @young1lin/dsh-mcp-adapter
 
-**MCP 与连接** — a DeepSeek Harness (DSH) plugin that does exactly one thing: mount MCP servers into every session's own agent scope, hosted by a plugin-owned engine child. This is the **mcp-only** branch — the SSH tunnels, database browsers (mysql/redis/pg/mongo/rest adapters), traffic ring, backup/migration and the standalone `lmg` gateway form were surgically removed. `main` carries the full build.
+**MCP 与连接** — a DeepSeek Harness (DSH) plugin that does exactly one thing: mount MCP servers into every session's own agent scope, hosted by a plugin-owned engine child. The current `main` branch and npm package are **MCP-only**: SSH tunnels, database browsers, traffic-ring visualizations, backup/migration and the standalone `lmg` gateway are not included.
 
 ## What you get
 
@@ -13,6 +13,27 @@
 In **Add MCP → JSON**, paste either a single server definition or a whole `{ "mcpServers": { "name": { … } } }` document. The first server is selected and its name is filled automatically; other servers are not saved by this single-entry editor (use bulk import for all entries). HTTP URL/headers and stdio command/args/env are supported; native/session targets convert stdio to a complete proc command line without discarding unknown options. Optional fields fold under **Advanced settings**.
 
 This build is **engine-only**: the engine starts by default; only explicitly setting `engine: false` is refused.
+
+## Screenshots
+
+### The conversation's actual tool catalog
+
+Open the conversation **MCP** tab. **This session** shows its frozen registered MCPs and expandable tools, not whatever is in the latest configuration. **New-session config** is a separate read-only preview of the defaults for a new conversation; it does not change this session or automatically copy its overrides. Counts in the screenshot are examples, and registration is not a live health indicator.
+
+![Session MCP tab showing frozen services, expandable tools and a separate new-session configuration preview](<assets/images/MCP-2.png>)
+
+<details>
+<summary>Configuration walkthrough: choose a source layer and add an MCP</summary>
+
+**1. Choose where to save.** Open **Settings → MCP & Connections → MCP services → Add MCP**, then select a source layer. Standard layers use the usual `mcpServers` format; the native layer uses engine definitions. Claude and .agents sources are separate destinations, and edits stay in the chosen source.
+
+![MCP services page with global .agents, .claude and native save destinations](<assets/images/MCP-1.png>)
+
+**2. Paste a definition, review the form, then test and save.** The JSON editor accepts a single server definition or a full `mcpServers` document, automatically selects the first entry and fills its name. Use bulk import when you want all entries. The example below uses Microsoft's public documentation endpoint; the faint Authorization text is an environment-variable placeholder, not a saved credential. Keep optional fields under **Advanced settings** and use **Test** to check reachability before saving.
+
+![HTTP MCP editor populated from a mcpServers document with optional advanced settings](<assets/images/MCP-0.png>)
+
+</details>
 
 ## Install
 
@@ -33,16 +54,16 @@ Then open **Settings → MCP 与连接 → MCP Services** (and the conversation 
 
 ### What is the "engine"?
 
-One private child process (`dist/engine/ipc-main.js`) the plugin spawns itself: it hosts every MCP you configure (proc children, http proxies), keeps the call log, and talks to the dsh host process over a stdio pipe nothing else can reach. If an MCP crashes, the engine dies and respawns — dsh itself never goes down with it. It is inside the package: nothing to install separately, and no HTTP port is opened.
+One private child process (`dist/engine/ipc-main.js`) the plugin spawns itself: it hosts every MCP you configure (proc children, http proxies), keeps the call log, and talks to the dsh host process over a stdio pipe nothing else can reach. MCP failures stay outside the dsh host process; if the engine itself exits, its supervisor can respawn it. It is inside the package: nothing to install separately, and no HTTP port is opened.
 
-### Source install (the mcp-only branch)
+### Source install
 
 ```bash
-git clone -b mcp-only https://github.com/young1lin/dsh-mcp-adapter.git
+git clone -b main https://github.com/young1lin/dsh-mcp-adapter.git
 cd dsh-mcp-adapter && npm install && npm run build   # dist/ is required; git has no prebuilt one
 ```
 
-Then link the checkout into the profile (`~/.dsh/profiles/web/node_modules/@young1lin/dsh-mcp-adapter` → this repo) and use the same two-line patch entry above. After pulling new commits: `npm run build`, restart dsh web.
+Then link the checkout into the profile (`~/.dsh/profiles/web/node_modules/@young1lin/dsh-mcp-adapter` → this repo) and use the same two-line patch entry above. After pulling new commits: remove the checkout’s generated `dist/` directory, run `npm run build`, restart dsh web, and refresh the browser.
 
 ## Config discovery & deduplication
 
