@@ -11,6 +11,7 @@ import { NS, en, zh } from './i18n.js'
 import { css, kit, type ReactLike } from './ui.js'
 import { paintNavIcon } from './nav-icon.js'
 import { makeMcpWorkbench } from './pages/mcp.js'
+import type { WorkspacePickerHost } from './pages/workspace-picker.js'
 import { makeSessionTab, type StartNext } from './pages/session.js'
 
 // window.__ModuleLoader__ is declared in src/globals.d.ts (repo-wide).
@@ -103,7 +104,19 @@ window.__ModuleLoader__!.load({
 
     // Keep hook-using pages as stable component identities; the settings view
     // exposes only MCP services (no tokens, public endpoint or diagnostics).
-    const McpPane = makeMcpWorkbench(React, k)
+    // Optional shell baseline exports, not new plugin dependencies. A host
+    // without them still loads the panel using the local dropdown surface.
+    const pickerHost: WorkspacePickerHost = {}
+    try {
+      const ui = require('@deepseek-ai/dsh-client-ui-primitives') as WorkspacePickerHost
+      pickerHost.MenuSurface = ui.MenuSurface
+      pickerHost.Input = ui.Input
+    } catch { /* older host: local surface */ }
+    try {
+      const dom = require('react-dom') as WorkspacePickerHost
+      if (typeof dom.createPortal === 'function') pickerHost.createPortal = dom.createPortal
+    } catch { /* older host: inline fixed surface */ }
+    const McpPane = makeMcpWorkbench(React, k, pickerHost)
     const SessionTab = makeSessionTab(React, k)
 
     function Workbench(props: { t?: T }) {

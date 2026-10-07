@@ -14,8 +14,10 @@ import type { LayerId, Preview, PreviewEntry, PreviewLayer, SaveEntryBody } from
 /** The layer identities this client knows by name (backend contract R5). */
 export const KNOWN_LAYER_IDS: readonly LayerId[] = [
   'global:standard',
+  'global:claude',
   'project:root',
   'project:agents',
+  'project:claude',
   'global:native',
   'project:native',
   'session:overrides',
@@ -24,8 +26,10 @@ export const KNOWN_LAYER_IDS: readonly LayerId[] = [
 /** i18n key for each known layer id (unknown ids fall back to the raw id). */
 export const LAYER_NAME_KEYS: Record<string, string> = {
   'global:standard': 'layerGlobalStandard',
+  'global:claude': 'layerGlobalClaude',
   'project:root': 'layerProjectRoot',
   'project:agents': 'layerProjectAgents',
+  'project:claude': 'layerProjectClaude',
   'global:native': 'layerGlobalNative',
   'project:native': 'layerProjectNative',
   'session:overrides': 'layerSessionOverrides',
@@ -34,16 +38,18 @@ export const LAYER_NAME_KEYS: Record<string, string> = {
 /** Layers the Add-wizard may target, in display order (session only in the session tab). */
 export const CREATE_TARGETS: readonly LayerId[] = [
   'global:standard',
+  'global:claude',
   'project:root',
   'project:agents',
+  'project:claude',
   'global:native',
   'project:native',
 ]
 
 /**
  * The layerId of a preview layer: the backend field when present, else the
- * pre-layerId fallback derived from level+source. 'project:agents' is
- * UNREACHABLE in the fallback (two files share level=project/source=standard)
+ * pre-layerId fallback derived from level+source. Claude and project:agents
+ * are UNREACHABLE in the fallback (multiple files share level/source)
  * — that layer only becomes addressable once the backend ships layerId.
  */
 export function layerIdOfLayer(layer: PreviewLayer): LayerId | undefined {

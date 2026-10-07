@@ -7,7 +7,7 @@
  * value a client ever sees).
  *
  * Persistence sources (exactly one per definition, TASK 3.2):
- *   standard file  ~/.agents/.mcp.json | <ws>/.mcp.json | <ws>/.agents/.mcp.json
+ *   standard file  ~/.{claude,agents}/.mcp.json | <ws>/{.claude/,.agents/,}.mcp.json
  *   native catalog plugin-private sealed catalog (global or per-workspace)
  *   session store  plugin-private sealed per-session overrides (P2.3)
  *

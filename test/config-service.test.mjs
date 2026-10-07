@@ -110,7 +110,7 @@ test('tombstones: project disable masks global; session disable masks project; d
   await svc.saveEntry({ level: 'global', source: 'standard', name: 'svc', def: { command: 'global-cmd' }, expectedRevision: '' })
   mkdirSync(join(f.dir, 'wsA'), { recursive: true })
   const pv0 = await svc.preview({ workspaceId: 'wsA' })
-  const wsRevision = pv0.layers.filter((l) => l.level === 'project' && l.source === 'standard')[0].revision
+  const wsRevision = pv0.layers.find((l) => l.layerId === 'project:root').revision
   await svc.setEnabled({ level: 'project', name: 'svc', enabled: false, expectedRevision: wsRevision, workspaceId: 'wsA' })
   const p1 = await svc.preview({ workspaceId: 'wsA' })
   const disabled = p1.entries.find((e) => e.name === 'svc')
@@ -128,7 +128,7 @@ test('tombstones: project disable masks global; session disable masks project; d
   assert.equal(sEntry.pending, true, 'session changes are pending until a new session')
   // delete the project override -> inheritance restored
   const pv2 = await svc.preview({ workspaceId: 'wsA' })
-  const wsRevision2 = pv2.layers.filter((l) => l.level === 'project' && l.source === 'standard')[0].revision
+  const wsRevision2 = pv2.layers.find((l) => l.layerId === 'project:root').revision
   await svc.saveEntry({ level: 'project', source: 'standard', name: 'svc', def: null, expectedRevision: wsRevision2, workspaceId: 'wsA' })
   const p3 = await svc.preview({ workspaceId: 'wsA' })
   const restored = p3.entries.find((e) => e.name === 'svc')

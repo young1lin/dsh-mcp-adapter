@@ -17,6 +17,14 @@ function storage() {
   return mkdtempSync(join(tmpdir(), 'mcp-manager-ipc-'))
 }
 
+// The old abort bug cleared its own request timer; a separate deadline
+// must fail the test and reach finally/dispose rather than wedge the runner.
+async function settlesWithin(promise, ms = 2500) {
+  let timer
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('cancelled IPC request never settled')), ms) })]) }
+  finally { clearTimeout(timer) }
+}
+
 test('supervisor: spawn, handshake, ping, status, graceful dispose', async () => {
   const dir = storage()
   const lines = []
@@ -103,7 +111,7 @@ test('supervisor: a request whose signal is ALREADY aborted settles E_CANCELLED,
     await supervisor.ensure()
     const signal = AbortSignal.abort()
     await assert.rejects(
-      () => supervisor.request('ping', undefined, { timeoutMs: 5000, signal }),
+      () => settlesWithin(supervisor.request('ping', undefined, { timeoutMs: 5000, signal })),
       (err) => err.code === 'E_CANCELLED',
       'a pre-aborted signal must reject its request instead of stranding it',
     )
@@ -118,8 +126,9 @@ test('supervisor: aborting a request MID-FLIGHT settles E_CANCELLED, never hangs
   const supervisor = createEngineSupervisor({ storageDir: dir }, { info: () => {}, warn: () => {} })
   try {
     await supervisor.ensure()
-    // A proc whose child spawns but never speaks MCP: the engine's ensure sits
-    // in the 60s handshake until the cancel frame aborts it.
+    // A proc that never speaks MCP keeps ensure in-flight. ensure does not
+    // consume the signal: this specifically tests LOCAL host-side settlement.
+    // Real mcp.call cancellation/continuation is in conversation-safety.test.
     const controller = new AbortController()
     const pending = supervisor.request(
       'mcp.ensure',
@@ -129,12 +138,13 @@ test('supervisor: aborting a request MID-FLIGHT settles E_CANCELLED, never hangs
     setTimeout(() => controller.abort(), 300)
     const started = Date.now()
     await assert.rejects(
-      () => pending,
+      () => settlesWithin(pending),
       (err) => err.code === 'E_CANCELLED',
       'an aborted in-flight request must settle instead of waiting for the engine reply it will never match',
     )
     // It settled via the abort path, not by burning the whole timeout.
-    assert.ok(Date.now() - started < 4500, 'settled promptly after abort')
+    assert.ok(Date.now() - started < 2500, 'settled promptly after abort')
+    assert.equal((await supervisor.request('ping', undefined, { timeoutMs: 2000 })).pong, true, 'next request can still finish')
   } finally {
     await supervisor.dispose()
     rmSync(dir, { recursive: true, force: true })

@@ -11,6 +11,7 @@ test('defaults: no config yields process-mode with standard files', () => {
   assert.equal(resolved.globalFile, join(homedir(), '.agents', '.mcp.json'))
   assert.equal(resolved.projectRoot, resolve(process.cwd()))
   assert.deepEqual(resolved.projectFiles, [
+    join(resolve(process.cwd()), '.claude', '.mcp.json'),
     join(resolve(process.cwd()), '.mcp.json'),
     join(resolve(process.cwd()), '.agents', '.mcp.json'),
   ])

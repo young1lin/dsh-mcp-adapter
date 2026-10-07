@@ -8,6 +8,7 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { expandHome } from './shared.js'
+import { projectStandardLayers } from './config/standard-paths.js'
 
 /** Adapter config keys; validated by hand in 'validateConfig'. */
 const CONFIG_KEYS = new Set(['project', 'projectRoot', 'globalFile', 'projectFile', 'projectFiles', 'disable', 'failOnStartupError', 'toolCallTimeoutMs', 'watch', 'engine'])
@@ -89,7 +90,7 @@ export function validateConfig(raw: unknown): ResolvedConfig {
     }
     projectFiles = [resolve(expandHome(cfg.projectFile as string))]
   } else {
-    projectFiles = [join(root, '.mcp.json'), join(root, '.agents', '.mcp.json')]
+    projectFiles = projectStandardLayers(root).map((layer) => layer.path)
   }
   const disable = cfg.disable === undefined ? [] : cfg.disable
   if (!Array.isArray(disable) || (disable as unknown[]).some((entry) => typeof entry !== 'string')) {

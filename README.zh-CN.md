@@ -12,6 +12,8 @@ DeepSeek Harness（DSH）插件，只做一件事：把 MCP 服务器挂进每�
 - **MCP 服务页**：保留配置、启停、工具/资源/提示词、工具调用与每 MCP 调用日志（区分 `panel` 与 `dsh-session` 来源），以及 stderr 捕获；不提供 Advanced 页、对外 HTTP MCP 端点、令牌管理或内存诊断。
 - **安全**：宿主与引擎间是私有 stdio IPC；浏览器只能走同源 `/dsh-mcp-manager` 桥（回环 + 同源信任围栏）；列表 DTO 全部掩码密钥，落盘密封（DPAPI/绑机器）。
 
+在 **添加 MCP → JSON** 中，可粘贴单个服务定义，或完整的 `{ "mcpServers": { "名称": { … } } }` 文档。编辑器默认取第一项并回填名称，其他项不会一并保存（要全部导入请用批量导入）。支持 HTTP 的 URL/headers 和 stdio 的 command/args/env；native/会话层会转换为完整 proc 命令行，并保留未知选项。可选字段收进 **高级设置**。
+
 本分支**只支持引擎模式**：引擎默认开启；只有显式写 `engine: false` 才会拒绝启动。
 
 ## 安装
@@ -43,6 +45,18 @@ cd dsh-mcp-adapter && npm install && npm run build   # 必须构建；git 仓库
 ```
 
 然后把 checkout 软链进 profile（`~/.dsh/profiles/web/node_modules/@young1lin/dsh-mcp-adapter` → 本仓库），patch 条目同上两行。拉了新提交后：`npm run build`，重启 dsh web。
+
+## 配置自动发现与去重
+
+默认同时读取以下标准文件（低优先级 → 高优先级）：
+
+- 全局：`~/.claude/.mcp.json` → `~/.agents/.mcp.json`。
+- 项目：`.claude/.mcp.json` → 根目录 `.mcp.json` → `.agents/.mcp.json`。
+- 跨作用域：global → project → session。
+
+按 MCP 名称合并去重；同名整条覆盖，不跨文件拼接字段，`disabled: true` 遮蔽低层配置。不同名称但定义相同的服务共用一个引擎实例，保留各自的工具命名空间。同层 standard/native 同名仍报告冲突。读取不迁移、不修改现有文件；面板编辑写回条目自己的来源文件并校验 revision。缺失文件正常跳过，坏 JSON/条目上报并隔离，不阻断健康服务。`.cluade` 拼写错误不作为配置目录。
+
+显式设置非默认 `globalFile` 仍只读取指定的全局标准文件（替换默认两份），不额外读取用户主目录，避免意外引入工具。
 
 ## 作用域与生效时机
 

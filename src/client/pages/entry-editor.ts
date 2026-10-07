@@ -18,13 +18,28 @@
 import type { ReactLike, Kit } from '../ui.js'
 import { view } from '../ui.js'
 import { api, type LayerId } from '../api.js'
-import { buildSaveBody, findLayer, isConflictRejection } from '../scope.js'
+import { readEditorDocument } from '../editor-document.js'
+import { buildSaveBody, findLayer, isConflictRejection, LAYER_NAME_KEYS } from '../scope.js'
 import {
   applyField, fieldValue, fieldsFor, labelFor, retype, typeOfDef, typesFor, unknownKeys,
   type FieldSpec,
 } from '../fields.js'
 
 type T = (key: string) => string
+let fieldSerial = 0
+
+/** Keep uncommon options out of the connection's main setup path. */
+function editorFields(type: string) {
+  const fields = fieldsFor(type)
+  const primary = type === 'stdio' ? ['command', 'args'] : type === 'proc' ? ['command'] : type === 'remote' || type === 'http' ? ['url', 'headers'] : undefined
+  return { main: primary === undefined ? fields : fields.filter((f) => primary.includes(f.k)), advanced: primary === undefined ? [] : fields.filter((f) => !primary.includes(f.k)) }
+}
+
+function hasValue(value: unknown): boolean {
+  if (value === undefined || value === null || value === '') return false
+  if (typeof value === 'object') return Object.keys(value).length > 0
+  return true
+}
 
 /** Everything the editor freezes at OPEN time (R5). */
 export interface EditorArgs {
@@ -46,14 +61,6 @@ export interface EditorArgs {
   onRevision: (revision: string) => void
 }
 
-/** Parse the draft, or undefined when it is not (yet) a JSON object. */
-function parseDef(text: string): Record<string, unknown> | undefined {
-  try {
-    const value: unknown = JSON.parse(text)
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
-    return value as Record<string, unknown>
-  } catch { return undefined }
-}
 
 /**
  * One form field. It holds its own draft text so that a half-typed value
@@ -75,7 +82,8 @@ function FieldRow(
   const take = (next: string | boolean) => setHeld({ base: props.value, draft: next })
   const label = props.lang === 'zh' ? f.zh : f.en
   const hint = props.lang === 'zh' ? f.hintZh : f.hintEn
-  const hintNode = hint !== undefined ? kit.h('div', { className: 'mmc-hint' }, hint) : null
+  const [id] = React.useState(() => 'mcp-editor-field-' + String(++fieldSerial))
+  const hintNode = hint !== undefined ? kit.h('div', { id: id + '-hint', className: 'mmc-hint', title: hint }, hint) : null
   if (f.bool === true) {
     // Full width, never half: a checkbox parked beside a text field reads as
     // an option OF that field rather than one of its own.
@@ -83,6 +91,7 @@ function FieldRow(
       kit.h('label', { className: 'mmc-check' },
         kit.h('input', {
           type: 'checkbox', checked: draft === true,
+          ...(hint !== undefined ? { 'aria-describedby': id + '-hint' } : {}),
           onChange: (e: { target: { checked: boolean } }) => { take(e.target.checked); props.onCommit(e.target.checked) },
         }),
         label),
@@ -91,40 +100,69 @@ function FieldRow(
   const lossless = f.num !== true && f.kv !== true && f.list !== true && f.json !== true
   const placeholder = props.lang === 'zh' && f.phZh !== undefined ? f.phZh : f.ph
   const shared = {
-    value: String(draft),
+    id, value: String(draft),
+    ...(hint !== undefined ? { 'aria-describedby': id + '-hint' } : {}),
     spellCheck: false,
     ...(placeholder !== undefined ? { placeholder } : {}),
     onChange: (e: { target: { value: string } }) => { take(e.target.value); if (lossless) props.onCommit(e.target.value) },
     onBlur: () => { if (!lossless) props.onCommit(draft) },
   }
   return kit.h('div', { className: 'mmc-field', ...(f.half === true ? { 'data-half': 'true' } : {}) },
-    kit.h('label', {}, label),
-    f.area === true ? kit.textarea(shared) : kit.input(shared),
+    kit.h('label', { htmlFor: id }, label),
+    f.area === true ? kit.textarea({ ...shared, rows: f.k === 'args' ? 3 : 4, ...(f.kv === true || f.list === true || f.json === true ? { className: 'mmc-input mmc-editor-code' } : {}) }) : kit.input(shared),
     hintNode)
 }
 
 export function EntryEditor(React: ReactLike, kit: Kit, args: EditorArgs, FieldView: (props: never) => unknown) {
   const t = args.t
   const lang = t('__lang') === 'zh' ? 'zh' : 'en'
-  const [text, setText] = React.useState(args.initial)
-  const [name, setName] = React.useState(args.mode === 'edit' ? args.name : '')
+  // Session overrides are engine definitions too, not standard-file entries.
+  const native = args.source === 'native' || args.source === 'session'
+  const initial = readEditorDocument(args.initial, native)
+  const [text, setText] = React.useState(initial?.def !== undefined ? JSON.stringify(initial.def, null, 2) : args.initial)
+  const [name, setName] = React.useState(initial?.name ?? (args.mode === 'edit' ? args.name : ''))
+  const [imported, setImported] = React.useState(initial?.name ?? '')
   const [tab, setTab] = React.useState<'form' | 'json'>('form')
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
   const [conflict, setConflict] = React.useState(false)
   const [probe, setProbe] = React.useState('')
   const target = args.layerId !== undefined ? args.layerId : args.level + '/' + args.source
-  const def = parseDef(text)
+  const parsed = readEditorDocument(text, native)
+  const def = parsed?.def
   const type = def !== undefined ? typeOfDef(def, args.layerId) : ''
   const offered = typesFor(args.layerId)
   const types = offered.includes(type) || type === '' ? offered : offered.concat([type])
   const extra = def !== undefined ? unknownKeys(def, type) : []
+  const fields = editorFields(type)
+  const [advancedOpen, setAdvancedOpen] = React.useState(() => fields.advanced.some((f) => hasValue(def?.[f.k])))
+  const [typeId] = React.useState(() => 'mcp-editor-type-' + String(++fieldSerial))
+  const renderFields = (list: FieldSpec[]) => list.map((field) => kit.h(FieldView, {
+    key: type + ':' + field.k, lang, field, value: fieldValue(def ?? {}, field),
+    onCommit: (value: string | boolean) => commit(field, value),
+  } as never))
   /** Fold one field edit back into the draft. A bad number/JSON reports itself. */
   const commit = (field: FieldSpec, value: string | boolean) => {
     if (def === undefined) return
     setErr('')
     try { setText(JSON.stringify(applyField(def, field, value), null, 2)) }
     catch (error) { setErr(field.k + ': ' + ((error as { message?: string }).message ?? String(error))) }
+  }
+  /** Normalize a pasted client document once, with an explicit first-server hint. */
+  const acceptJson = (value: string) => {
+    const document = readEditorDocument(value, native)
+    if (document?.def !== undefined && document.name !== undefined) {
+      setText(JSON.stringify(document.def, null, 2))
+      setName(document.name)
+      setImported(document.name)
+      const nextFields = editorFields(typeOfDef(document.def, args.layerId))
+      setAdvancedOpen(nextFields.advanced.some((f) => hasValue(document.def?.[f.k])))
+      setErr('')
+    } else {
+      setText(value)
+      setImported('')
+      setErr(document?.error !== undefined ? t(document.error) : '')
+    }
   }
   /**
    * Probe the DRAFT before saving it. Nothing is written or hosted, so a
@@ -134,7 +172,7 @@ export function EntryEditor(React: ReactLike, kit: Kit, args: EditorArgs, FieldV
   const test = React.useCallback(async () => {
     setBusy(true); setProbe(t('testRunning'))
     try {
-      const draft = parseDef(text)
+      const draft = readEditorDocument(text, native)?.def
       if (draft === undefined) throw new Error(t('defNotObject'))
       const out = await api.mcpTest(draft)
       if (!out.testable) setProbe(t('testUntestable').replace('{types}', (out.types ?? []).join(' | ')))
@@ -150,8 +188,9 @@ export function EntryEditor(React: ReactLike, kit: Kit, args: EditorArgs, FieldV
     setBusy(true); setErr(''); setConflict(false)
     const nameForSave = name.trim()
     try {
-      const body = parseDef(text)
-      if (body === undefined) throw new Error(t('defNotObject'))
+      const document = readEditorDocument(text, native)
+      const body = document?.def
+      if (body === undefined) throw new Error(t(document?.error ?? 'defNotObject'))
       // Editing the name IS the rename: one round trip moves the definition
       // to the new name and drops the old one on the same layer.
       if (args.mode === 'edit' && nameForSave !== args.name) {
@@ -176,7 +215,7 @@ export function EntryEditor(React: ReactLike, kit: Kit, args: EditorArgs, FieldV
       if (isConflictRejection(error)) setConflict(true)
       else setErr((error as { message?: string }).message ?? String(error))
     } finally { setBusy(false) }
-  }, [text, name])
+  }, [text, name, args])
   /** Explicit, user-initiated: re-read the layer for its new revision, keep the draft text. */
   const reloadLayer = React.useCallback(async () => {
     setBusy(true); setErr('')
@@ -192,48 +231,47 @@ export function EntryEditor(React: ReactLike, kit: Kit, args: EditorArgs, FieldV
       setErr((error as { message?: string }).message ?? String(error))
     } finally { setBusy(false) }
   }, [])
-  return kit.card(
-    kit.h('div', { className: 'mmc-row' },
-      kit.h('label', {}, t('name'), ' ',
-        kit.input({ value: name, onChange: (e: { target: { value: string } }) => setName(e.target.value), spellCheck: false })),
-      args.mode === 'edit' ? kit.tag(target, false, 'target') : null,
-      args.mode === 'edit' && name.trim() !== args.name ? kit.tag(t('willRename'), 'info', 'rename') : null,
-      kit.actions(
-        kit.btn(t('test'), () => { void test() }, { key: 'test', disabled: busy }),
-        kit.btn(t('cancel'), args.onCancel, { key: 'cancel' }),
-        kit.btn(t('save'), () => { void go() }, { key: 'save', primary: true, disabled: busy || name.trim().length === 0 }),
-      ),
+  const title = args.mode === 'create' ? t('addMcp') : t('editorEditTitle')
+  const typeLabel = (value: string) => value === 'stdio' || value === 'proc' ? t('editorTypeLocal') : value === 'remote' || value === 'http' ? t('editorTypeRemote') : labelFor(value, lang)
+  const chevron = kit.h('svg', { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, 'aria-hidden': 'true' }, kit.h('path', { d: 'M4.5 6L8 9.5 11.5 6', strokeLinecap: 'round', strokeLinejoin: 'round' }))
+  return kit.h('section', { className: 'mmc-editor', 'aria-label': title },
+    kit.h('div', { className: 'mmc-editor-header' },
+      kit.h('div', { className: 'mmc-editor-heading' },
+        kit.h('h3', {}, title),
+        kit.h('div', { className: 'mmc-editor-source', title: target + ' · rev ' + (args.revision || '∅') }, t(LAYER_NAME_KEYS[target] ?? target))),
+      kit.tabs([{ key: 'form', label: t('formTab') }, { key: 'json', label: t('jsonTab') }], tab, (k) => setTab(k as 'form' | 'json')),
     ),
-    kit.tabs([{ key: 'form', label: t('formTab') }, { key: 'json', label: t('jsonTab') }], tab, (k) => setTab(k as 'form' | 'json')),
-    kit.note(target + ' · rev ' + (args.revision !== '' ? args.revision.slice(0, 8) : '∅')),
-    tab === 'form' && def === undefined ? kit.error(t('defNotObject')) : null,
-    tab === 'form' && def !== undefined
-      ? kit.h('div', { className: 'mmc-fields' },
-          kit.h('div', { className: 'mmc-field', 'data-half': 'true' },
-            kit.h('label', {}, t('connType')),
-            kit.select(
-              {
-                value: type,
-                onChange: (e: { target: { value: string } }) => setText(JSON.stringify(retype(def, type, e.target.value), null, 2)),
-              },
-              types.map((x) => kit.h('option', { key: x, value: x }, labelFor(x, lang))),
-            )),
-          fieldsFor(type).map((field) => kit.h(FieldView, {
-            key: type + ':' + field.k,
-            lang, field, value: fieldValue(def, field),
-            onCommit: (value: string | boolean) => commit(field, value),
-          } as never)),
-        )
-      : null,
-    tab === 'form' && extra.length > 0 ? kit.note(t('extraKeys').replace('{n}', String(extra.length)) + ' (' + extra.join(', ') + ')') : null,
-    tab === 'json' ? kit.textarea({ value: text, onChange: (e: { target: { value: string } }) => setText(e.target.value), spellCheck: false }) : null,
-    probe !== '' ? kit.note(probe) : null,
-    conflict ? kit.error(t('conflict')) : null,
-    conflict ? kit.h('div', { className: 'mmc-row' },
-      kit.btn(t('reloadLayerKeepDraft'), () => { void reloadLayer() }, { disabled: busy }),
-      kit.note(t('conflictHint')),
-    ) : null,
-    err !== '' ? kit.error(err) : null,
+    kit.h('div', { className: 'mmc-editor-body' },
+      kit.h('div', { className: 'mmc-editor-basics', 'data-json': tab === 'json' ? 'true' : undefined },
+        kit.h('div', { className: 'mmc-field' }, kit.h('label', { className: 'mmc-editor-name-label' }, t('name'),
+          kit.input({ value: name, placeholder: t('editorNamePlaceholder'), onChange: (e: { target: { value: string } }) => setName(e.target.value), spellCheck: false }))),
+        tab === 'form' && def !== undefined ? kit.h('div', { className: 'mmc-field' },
+          kit.h('label', { htmlFor: typeId }, t('connType')),
+          kit.h('div', { className: 'mmc-editor-select' }, kit.select({
+            id: typeId, value: type,
+            onChange: (e: { target: { value: string } }) => { setText(JSON.stringify(retype(def, type, e.target.value), null, 2)); setAdvancedOpen(false); setImported('') },
+          }, types.map((x) => kit.h('option', { key: x, value: x }, typeLabel(x)))), chevron)) : null,
+      ),
+      args.mode === 'edit' && name.trim() !== args.name ? kit.note(t('willRename')) : null,
+      imported !== '' ? kit.h('div', { className: 'mmc-editor-imported', role: 'status' }, t('editorJsonLoaded').replace('{name}', imported)) : null,
+      tab === 'form' && def === undefined ? kit.error(t(parsed?.error ?? 'defNotObject')) : null,
+      tab === 'form' && def !== undefined ? kit.h('div', { className: 'mmc-fields' }, renderFields(fields.main)) : null,
+      tab === 'form' && def !== undefined && fields.advanced.length > 0 ? kit.h('details', {
+        className: 'mmc-editor-advanced', open: advancedOpen, onToggle: (e: { currentTarget: { open: boolean } }) => setAdvancedOpen(e.currentTarget.open),
+      }, kit.h('summary', {}, kit.h('span', {}, t('editorAdvanced')), kit.h('span', { className: 'mmc-editor-optional' }, t('editorOptional')), kit.h('span', { className: 'mmc-editor-disclosure' }, chevron)),
+        kit.h('div', { className: 'mmc-fields' }, renderFields(fields.advanced))) : null,
+      tab === 'form' && extra.length > 0 ? kit.note(t('extraKeys').replace('{n}', String(extra.length)) + ' (' + extra.join(', ') + ')') : null,
+      tab === 'json' ? kit.h('div', { className: 'mmc-editor-json' },
+        kit.note(t('editorJsonHint')),
+        kit.textarea({ className: 'mmc-input mmc-editor-code', value: text, rows: 12, onChange: (e: { target: { value: string } }) => acceptJson(e.target.value), 'aria-label': t('editorJsonLabel'), spellCheck: false })) : null,
+      probe !== '' ? kit.h('div', { className: 'mmc-editor-feedback', role: 'status' }, probe) : null,
+      conflict ? kit.error(t('conflict')) : null,
+      conflict ? kit.h('div', { className: 'mmc-editor-conflict' }, kit.btn(t('reloadLayerKeepDraft'), () => { void reloadLayer() }, { disabled: busy }), kit.note(t('conflictHint'))) : null,
+      err !== '' ? kit.error(err) : null,
+    ),
+    kit.h('div', { className: 'mmc-editor-footer' },
+      kit.btn(t('test'), () => { void test() }, { disabled: busy }),
+      kit.actions(kit.btn(t('cancel'), args.onCancel), kit.btn(t('save'), () => { void go() }, { primary: true, disabled: busy || name.trim().length === 0 }))),
   )
 }
 

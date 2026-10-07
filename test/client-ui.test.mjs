@@ -79,6 +79,9 @@ test('scope: createTargetsFor uses backend layerIds in canonical order and dedup
   const preview = {
     layers: [
       layer({ layerId: 'global:standard' }),
+      layer({ layerId: 'global:claude' }),
+      layer({ layerId: 'project:claude', level: 'project', source: 'standard' }),
+      layer({ layerId: 'project:claude', level: 'project', source: 'standard' }),
       layer({ layerId: 'global:native', level: 'global', source: 'native' }),
       layer({ layerId: 'project:agents', level: 'project', source: 'standard' }),
       layer({ layerId: 'project:root', level: 'project', source: 'standard' }),
@@ -87,7 +90,13 @@ test('scope: createTargetsFor uses backend layerIds in canonical order and dedup
     ],
     entries: [], conflicts: [], problems: [],
   }
-  assert.deepEqual(scope.createTargetsFor(preview), ['global:standard', 'project:root', 'project:agents', 'global:native', 'project:native'])
+  assert.deepEqual(scope.createTargetsFor(preview), ['global:standard', 'global:claude', 'project:root', 'project:agents', 'project:claude', 'global:native', 'project:native'])
+  for (const layerId of ['global:claude', 'project:claude']) {
+    const captured = scope.captureFromEntry(entry({ layerId, revision: 'claude-rev' }))
+    assert.equal(scope.buildSaveBody(captured, 'x', { command: 'node' }).layerId, layerId)
+    assert.equal(scope.buildSaveBody(captured, 'x', {}).expectedRevision, 'claude-rev')
+    assert.ok(scope.LAYER_NAME_KEYS[layerId])
+  }
   assert.deepEqual(scope.createTargetsFor(undefined), [])
   // pre-layerId backend: project falls back to root only
   const legacyPreview = { layers: [layer(), layer({ level: 'project', source: 'standard' }), layer({ level: 'global', source: 'native' })], entries: [], conflicts: [], problems: [] }
@@ -1711,6 +1720,93 @@ test('pages (calls): an expanded call is laid out, not dumped as JSON', { skip: 
   assert.ok(shown.includes('"title": "量子位"'), 'the reply is decoded too')
   assert.ok(shown.includes('2087'), 'the facts are still there')
   assert.ok(shown.includes('2307'), 'including that the stored reply is only the head')
+})
+
+test('workspace dropdown: compact labels, searchable paths/IDs, keyboard selection, IME and escape', { skip: bundleSkipped }, async () => {
+  const mini = makeMiniReact()
+  const items = [
+    { id: 'uuid-one-long', title: 'swiss', path: 'C:/projects/swiss' },
+    { id: 'uuid-two-long', path: 'C:/projects/rustdesk' },
+  ]
+  stubFetch((call) => {
+    if (call.url.startsWith('/workspaces')) return { status: 200, json: { items } }
+    if (call.url.startsWith('/preview')) return { status: 200, json: previewDoc() }
+    if (call.url.startsWith('/engine')) return { status: 200, json: { off: true } }
+    return { status: 500, json: { error: 'no route' } }
+  })
+  const { registrations } = await loadClient(mini)
+  mini.render(mini.createElement(registrations.find((r) => r.slot === 'settings.section').component, { t: (key) => key }))
+  await flush()
+  const trigger = () => findAll(mini.tree(), (el) => el.props.className === 'mmc-ws-trigger')[0]
+  trigger().el.props.onClick()
+  await flush()
+  const options = () => findAll(mini.tree(), (el) => el.props.role === 'option')
+  const search = () => findAll(mini.tree(), (el) => el.props.role === 'combobox')[0]
+  assert.equal(options().length, 3, 'global and two projects')
+  assert.ok(findText(mini, 'rustdesk'), 'missing title falls back to basename, not UUID')
+  assert.ok(!wholeText(mini).includes('uuid-one-long'), 'full UUID is not visible noise')
+  assert.ok(options()[1].el.props.title.includes('uuid-one-long'), 'identity remains available in tooltip')
+  search().el.props.onChange({ target: { value: 'projects/rust' } })
+  await flush()
+  assert.equal(options().length, 1)
+  const key = (name, extra = {}) => ({ key: name, preventDefault() {}, stopPropagation() {}, ...extra })
+  search().el.props.onKeyDown(key('Enter', { isComposing: true }))
+  await flush()
+  assert.equal(trigger().el.props['aria-expanded'], 'true', 'IME Enter does not select')
+  search().el.props.onKeyDown(key('Enter'))
+  await flush()
+  assert.ok(textOf(trigger()).includes('rustdesk'))
+  assert.equal(trigger().el.props['aria-expanded'], 'false')
+  trigger().el.props.onKeyDown(key('ArrowDown'))
+  await flush()
+  search().el.props.onChange({ target: { value: 'uuid-one' } })
+  await flush()
+  assert.equal(options().length, 1, 'ID is searchable without displaying it')
+  let stopped = false
+  search().el.props.onKeyDown(key('Escape', { stopPropagation() { stopped = true } }))
+  await flush()
+  assert.equal(stopped, true, 'escape only dismisses picker, not settings modal')
+  assert.ok(textOf(trigger()).includes('rustdesk'), 'escape does not change selection')
+  trigger().el.props.onClick()
+  await flush()
+  search().el.props.onChange({ target: { value: 'no-such-workspace' } })
+  await flush()
+  assert.equal(options().length, 0)
+  assert.ok(findText(mini, 'workspaceNoMatches'))
+  search().el.props.onKeyDown(key('Tab'))
+  await flush()
+  assert.equal(trigger().el.props['aria-expanded'], 'false', 'Tab closes without changing value')
+  assert.equal(mini.renderError(), null)
+})
+
+test('Add MCP opens Claude layer editor and saves with captured source and revision', { skip: bundleSkipped }, async () => {
+  const mini = makeMiniReact()
+  const doc = previewDoc()
+  doc.layers.push({ level: 'global', source: 'standard', layerId: 'global:claude', label: 'HOST-PATH/.claude/.mcp.json', exists: false, revision: '' })
+  const calls = stubFetch((call) => {
+    if (call.url.startsWith('/preview')) return { status: 200, json: doc }
+    if (call.url.startsWith('/engine')) return { status: 200, json: { off: true } }
+    if (call.url.startsWith('/entry')) return { status: 200, json: { revision: 'new' } }
+    return { status: 500, json: { error: 'no route' } }
+  })
+  const { registrations } = await loadClient(mini)
+  mini.render(mini.createElement(registrations.find((r) => r.slot === 'settings.section').component, { t: (key) => key }))
+  await flush()
+  await clickButton(mini, 'addMcp')
+  await clickButton(mini, 'layerGlobalClaude')
+  const label = findAll(mini.tree(), (el) => el.type === 'label').find((node) => textOf(node).trim() === 'name')
+  const name = findAll(label, (el) => el.type === 'input')[0]
+  assert.ok(name, 'new entry name field appears')
+  name.el.props.onChange({ target: { value: 'new-server' } })
+  await flush()
+  await clickButton(mini, 'jsonTab')
+  textareas(mini)[0].el.props.onChange({ target: { value: JSON.stringify({ command: 'node', args: ['server.mjs'] }) } })
+  await flush()
+  await clickButton(mini, 'save')
+  const saves = calls.filter((c) => c.url.startsWith('/entry'))
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].body, { layerId: 'global:claude', level: 'global', source: 'standard', name: 'new-server', def: { command: 'node', args: ['server.mjs'] }, expectedRevision: '' })
+  assert.equal(mini.renderError(), null)
 })
 
 test('client bundle registers under the package name the loader discovered (id contract)', () => {

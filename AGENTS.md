@@ -20,7 +20,7 @@ npm run typecheck      # tsc --noEmit，提交前必过
 npm run build          # tsc + esbuild 打 client.js
 npm run build:client   # 只重打浏览器半区
 
-npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，125 个
+npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，161 个
 npm run test:engine    # vitest run --config vitest.engine.config.ts —— 引擎，279 个
 ```
 
@@ -71,6 +71,8 @@ DSH 宿主进程 (dsh web, :3080)
 | `merge.ts` | **唯一**的合并算法：session > project > global |
 | `service.ts` | 面向浏览器的唯一门面：按 scope id 取路径（浏览器永远不传路径）、拒绝符号链接逃逸、出站掩码、`expectedRevision` 乐观并发 |
 
+标准路径优先级（高 → 低）：项目 `.agents/.mcp.json` > 根 `.mcp.json` > `.claude/.mcp.json`；全局 `~/.agents/.mcp.json` > `~/.claude/.mcp.json`。路径和 layerId 在 `standard-paths.ts` 统一定义，按逻辑名去重，编辑必须写回条目自己的层和 revision。非默认 `globalFile` 仍只读取指定文件。
+
 合并规则要点：**整条替换，绝不跨源拼字段**；被标记 disabled 的提及是**墓碑**，会遮蔽所有更低层的同名条目；同一 scope 内 standard 与 native 同名是**冲突**，该名字直接排除并上报，不做静默选择。
 
 注意：native 层的 proc 定义里 **`command` 是完整命令行**（standardToNative 会把 `.mcp.json` 的 command+args 拼进去，`tokenizeCommand` 再拆开）——给它传 `args` 字段会被静默忽略，表现为子进程起了却永远握手超时。
@@ -101,6 +103,9 @@ DSH 宿主进程 (dsh web, :3080)
 7. **代理层的工具屏蔽要两头都做。** 列表按页过滤（分页归远端所有，空页也要保留 `nextCursor`），并且被屏蔽的工具**必须不可调用**，用统一措辞 `unknown tool: <name>` 拒绝。
 8. **严禁任何 preset 新增。**（用户明令，2026-09-10）插件不得要求、引导或代为创建/修改任何 `~/.dsh/.agent-presets` 下的 preset 行——会话工具一律由宿主侧挂载（`engine.sessionTools` 默认 true 的 unified 路径）。README/文档不得出现"给预设加行"类步骤；未来任何"请求 #1 绝对保证"类需求只能在宿主平面解决。
 
+9. **取消必须在宿主本地收束。**（0.3.4 / dfd190d）`engine-supervisor.request` 的 abort 分支删除 pending、清 timer 时必须立即 `reject(E_CANCELLED)`，不能等待引擎回包；迟到回包已经找不到 pending，等待它会令 started 工具 body 永远悬挂，DSH 整步无法继续。预取消 signal 同样必须收束，cancel frame 只能 best-effort。回归测试须有独立 watchdog，并验证取消后同会话/共享实例其他会话仍可调用。
+10. **pre-step 是 waterfall，不是通知。** 等 setup 屏障后必须 `return await next()`，未知会话、安装失败也照样继续；返回屏障 Promise/undefined 会破坏 `decision.kind`，让所有对话断掉。
+
 ## 活体验证
 
 - 用户自己的 dsh 跑在 **3080**，管理桥在 `http://127.0.0.1:3080/dsh-mcp-manager/...`，可以直接 curl 验证真实状态（比读代码可靠）。
@@ -112,6 +117,9 @@ DSH 宿主进程 (dsh web, :3080)
 
 - **Bash 工具会吃掉反斜杠**，即使在带引号的 heredoc 里。含 `\n`、`\/`、正则的补丁脚本要用 Write 工具落盘再执行，或者用 `chr(92)` 拼。
 - **仓库行尾是混的。** `src/engine/**` 大多是 CRLF，其余多为 LF，且 `core.autocrlf=false`、没有 `.gitattributes`。用 Python 文本模式读写会把整个文件转成 LF，一个 30 行的改动会显示成 600 行。写回时保留原行尾（`newline=''` + 二进制敏感替换，或 Edit 工具）。
+- **下拉框必须用真实 DOM 回归。** `autoFocus` 会在父弹层 ref 附加前触发 `focusin`，被 outside 判定误关；应在 effect 中等 ref 齐全后 `focus({ preventScroll: true })`。body portal 的 Tab/Shift+Tab 要先还焦 trigger 再走浏览器默认导航，避免宿主 modal trap 跳到首/末控件。保存位置选择必须整行是一个 button（含徽章和箭头），别只给标题绑事件。`test/client-dom.test.mjs` 覆盖这些真实 commit/ref/焦点与命中区边界；mini 不能代替它。
+- **MCP JSON 编辑器兼容包装格式。** 粘贴 `mcpServers` 文档默认只取第一项并回填名称，批量导入保持原多条语义。HTTP 按 URL/headers 渲染；native/会话层的 stdio 要用 shared/command-line 把 command+args 转完整 proc 命令行，不能让 args 被静默忽略。标准层历史 type:proc 保留完整命令行 schema。真实 DOM 测试须覆盖掩码/未知字段保留、捕获 revision，以及显式 reload 后 useCallback 不再使用旧 revision。
+- **表单宽度要测实际几何。** width:100% 还会叠加 content-box 的 padding/border；编辑器在自身 scope 内统一 border-box、min-width:0，并以 Chromium 在宽/窄容器中验证 scrollWidth 与控件 bounding rect，别只看 CSS 存在性。
 - **迷你 React 测试夹具有限制**（`test/client-ui.test.mjs`）：`useEffect` 每个组件实例只跑一次且忽略依赖，`useCallback` 也忽略依赖。所以某个标签页要用的数据，必须搭 stub fetch 的返回一起给。
 - **测试里不要自己算端口。** 用 `freePort()` 问操作系统。曾经用 `34000 + Date.now() % 1500` 算端口，模会重复，两个测试撞同一个端口后守护进程互相顶掉、活着的那个泄漏并占住端口，表现为"每次挂的用例都不一样、单跑全过"。
 - **临时目录由 `test/engine/setup.ts` 统一沙箱化**：它建一个 per-file 沙箱并把 `TMPDIR/TMP/TEMP` 重定向进去，`afterAll` 加 `process.on("exit")` 双重清理。测试里照常 `mkdtempSync(join(tmpdir(), ...))` 即可，不要绕开它自己找系统临时目录 —— 绕开就会重现那次 5,703 个残留目录。

@@ -23,9 +23,10 @@ import {
 } from '../api.js'
 import {
   buildSaveBody, captureFromEntry, captureFromLayer, createTargetsFor, findLayer,
-  layerIdOfEntry,
+  layerIdOfEntry, LAYER_NAME_KEYS,
 } from '../scope.js'
 import { makeEntryEditor, type EditorArgs } from './entry-editor.js'
+import { makeWorkspacePicker, type WorkspacePickerHost } from './workspace-picker.js'
 import { sortEntries } from '../../shared/view-order.js'
 import { parseSessionInstance } from '../../shared/instance-name.js'
 import { blankDef, typeOfDef, typesFor } from '../fields.js'
@@ -691,9 +692,10 @@ function ImportBody(
 }
 
 /** The full workbench factory: returns a STABLE component for the settings pane. */
-export function makeMcpWorkbench(React: ReactLike, kit: Kit): (props: { t: T }) => unknown {
+export function makeMcpWorkbench(React: ReactLike, kit: Kit, pickerHost: WorkspacePickerHost = {}): (props: { t: T }) => unknown {
   // One stable identity per hook-using conditional subtree (created ONCE per binding).
   const EditorView = makeEntryEditor(React, kit)
+  const WorkspacePicker = makeWorkspacePicker(React, kit, pickerHost)
   const DetailView = makeMcpDetail(React, kit)
   const WhereView = view<{ t: T; targets: LayerId[]; onPick: (layerId: LayerId) => void; onCancel: () => void }>(
     React, (props) => WherePicker(kit, props.t, props.targets, props.onPick, props.onCancel))
@@ -871,9 +873,7 @@ export function makeMcpWorkbench(React: ReactLike, kit: Kit): (props: { t: T }) 
       kit.note(t('intro')),
       kit.h('div', { className: 'mmc-row' },
         workspaces !== undefined && workspaces.length > 0
-          ? kit.select({ value: ws, onChange: (e: { target: { value: string } }) => setWs(e.target.value), title: t('workspace') },
-              [kit.h('option', { key: '', value: '' }, '— ' + t('scopeGlobal') + ' —')].concat(
-                workspaces.map((w) => kit.h('option', { key: w.id, value: w.id }, w.title !== undefined && w.title !== '' ? w.title + ' (' + w.id + ')' : w.id))))
+          ? kit.h(WorkspacePicker, { value: ws, items: workspaces, onChange: setWs, t })
           : kit.input({ placeholder: t('workspace'), value: ws, onChange: (e: { target: { value: string } }) => setWs(e.target.value), spellCheck: false }),
         StatusStrip(kit, t, p, engine),
       ),
@@ -947,25 +947,18 @@ function WherePicker(kit: Kit, t: T, targets: LayerId[], onPick: (layerId: Layer
   if (targets.length === 0) return kit.card(kit.note(t('noTargets')), kit.btn(t('cancel'), onCancel))
   return kit.card(
     kit.h('div', { className: 'mmc-label' }, t('wizardWhere')),
-    kit.rows(...targets.map((id) => kit.row({
-      key: id,
-      name: t(layerNameKeyOf(id)),
-      badge: { text: id },
-      onOpen: () => onPick(id),
-    }))),
+    // The whole destination, including its chevron, is a single hit target.
+    kit.rows(...targets.map((id) => kit.h('button', {
+      key: id, type: 'button', className: 'mmc-target', 'aria-label': t(layerNameKeyOf(id)), onClick: () => onPick(id),
+    }, kit.h('span', { className: 'mmc-target-label' }, t(layerNameKeyOf(id))),
+      kit.tag(id), kit.h('span', { className: 'mmc-chev', 'aria-hidden': 'true' }, '›')))),
     kit.note(t('wizardHint')),
     kit.btn(t('cancel'), onCancel),
   )
 }
 
 function layerNameKeyOf(layerId: LayerId): string {
-  if (layerId === 'global:standard') return 'layerGlobalStandard'
-  if (layerId === 'project:root') return 'layerProjectRoot'
-  if (layerId === 'project:agents') return 'layerProjectAgents'
-  if (layerId === 'global:native') return 'layerGlobalNative'
-  if (layerId === 'project:native') return 'layerProjectNative'
-  if (layerId === 'session:overrides') return 'layerSessionOverrides'
-  return 'layerOther'
+  return LAYER_NAME_KEYS[layerId] ?? 'layerOther'
 }
 
 

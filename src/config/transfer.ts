@@ -18,6 +18,8 @@
  * @module dsh-mcp-adapter/config/transfer
  */
 
+import { existsSync } from 'node:fs'
+import { commandLine } from '../shared/command-line.js'
 import { planMcpImport } from '../engine/mcp-import.js'
 import type { McpDefinition } from './types.js'
 import type { NativeEntry } from './native-catalog.js'
@@ -91,7 +93,12 @@ export function standardToNative(def: McpDefinition): NativeEntry['def'] | undef
   }
   if (typeof def.command === 'string') {
     const args = Array.isArray(def.args) ? (def.args as unknown[]).map(String) : []
-    const out: McpDefinition = { type: 'proc', command: [def.command, ...args.map(quoteArg)].join(' ') }
+    // Standard command+args uses an executable, not a shell command line.
+    // When args is omitted, preserve legacy inline commands (including
+    // absolute paths exported by nativeToStandard). Only a real executable
+    // file path proves the entire value is one token.
+    const executable = Array.isArray(def.args) || existsSync(def.command)
+    const out: McpDefinition = { type: 'proc', command: commandLine(def.command, args, executable) }
     if (typeof def.description === 'string') out.description = def.description
     if (def.cwd !== undefined) out.cwd = def.cwd
     if (def.env !== undefined) out.env = def.env
@@ -127,9 +134,4 @@ export function nativeToStandard(def: McpDefinition): McpDefinition | undefined 
 /** Validate a converted standard entry ahead of a write. */
 export function checkConverted(name: string, def: McpDefinition): string | undefined {
   return validateEntry(name, def)
-}
-
-function quoteArg(s: string): string {
-  if (!/[\s"]/.test(s)) return s
-  return '"' + s.replace(/"/g, '\\"') + '"'
 }

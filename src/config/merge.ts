@@ -10,8 +10,9 @@
  *
  * Same-SCOPE standard/native clashes are CONFLICTS: the name is excluded
  * from the effective set and reported for an explicit rename/migrate, never
- * silently picked. Two standard files inside one project scope keep their
- * historical root-then-.agents override order and are NOT a conflict.
+ * silently picked. Standard files within one scope are merged by name,
+ * later file wins: global Claude then agents; project Claude, root, agents.
+ * Existing root/.agents precedence is preserved; duplicate names are NOT conflicts.
  *
  * @module dsh-mcp-adapter/config/merge
  */
@@ -67,7 +68,7 @@ export function mergeMentions(mentions: Mention[], viewLevel: ScopeLevel): { ent
     if (conflicted) continue
 
     // Precedence order: scope level first; WITHIN one level+source the chain
-    // walks files in their historical order (project root before .agents), so
+    // walks files lowest-first (Claude before existing root/.agents), so
     // the LAST equal-rank mention is the operative one (later file wins).
     const indexed = list.map((m, index) => ({ m, index }))
     indexed.sort((a, b) => RANK[a.m.level] - RANK[b.m.level] || a.index - b.index)

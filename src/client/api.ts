@@ -28,11 +28,11 @@ async function call(method: string, path: string, body?: unknown, query?: Record
  * Opaque layer identity the HOST mints (R5 fix): the browser never addresses
  * a persistence layer by filesystem path — only by this id plus the revision
  * it captured when the editor was opened. Known values (backend contract):
- * global:standard, project:root, project:agents, global:native,
+ * global:standard, global:claude, project:root, project:agents, project:claude, global:native,
  * project:native, session:overrides. Unknown values pass through so a newer
  * backend can add layers without a client rebuild.
  */
-export type LayerId = 'global:standard' | 'project:root' | 'project:agents' | 'global:native' | 'project:native' | 'session:overrides' | (string & {})
+export type LayerId = 'global:standard' | 'global:claude' | 'project:root' | 'project:agents' | 'project:claude' | 'global:native' | 'project:native' | 'session:overrides' | (string & {})
 
 /** Scope ids the bridge accepts as query params (ws = workspaceId, ss = sessionId). */
 export interface ScopeIds {

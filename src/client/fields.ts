@@ -117,7 +117,7 @@ const NATIVE: Record<string, FieldSpec[]> = {
   ],
   http: [
     DESCRIPTION,
-    { k: 'url', en: 'Endpoint URL', zh: '服务地址', area: true, ph: 'https://mcp.context7.com/mcp' },
+    { k: 'url', en: 'Endpoint URL', zh: '服务地址', ph: 'https://mcp.context7.com/mcp' },
     HEADERS, PROXY, EXPOSE_RESOURCES, EXPOSE_PROMPTS, LAZY_OFF,
   ],
   echo: [DESCRIPTION],
@@ -134,7 +134,7 @@ const LABELS: Record<string, { en: string; zh: string }> = {
 
 /** Types a layer can hold. Native layers get the adapters; standard files cannot. */
 export function typesFor(layerId: string | undefined): string[] {
-  return layerId === 'global:native' || layerId === 'project:native'
+  return layerId === 'global:native' || layerId === 'project:native' || layerId === 'session:overrides'
     ? ['proc', 'http', 'echo']
     : ['stdio', 'remote']
 }
@@ -150,8 +150,17 @@ export function labelFor(type: string, lang: string): string {
 
 /** What type is this definition already? Shape decides for standard entries. */
 export function typeOfDef(def: Record<string, unknown>, layerId: string | undefined): string {
+  if (typesFor(layerId)[0] === 'stdio') {
+    if (typeof def.url === 'string') return 'remote'
+    // Legacy exported proc commands are whole lines; do not add an args
+    // control whose empty blur would turn that entire line into an executable.
+    if (def.type === 'proc') return 'proc'
+    if (typeof def.command === 'string') return 'stdio'
+    if (['http', 'remote', 'sse', 'streamable-http'].includes(String(def.type))) return 'remote'
+    if (def.type === 'stdio' || def.type === 'proc') return 'stdio'
+  }
   if (typeof def.type === 'string' && def.type !== '') return def.type
-  if (typesFor(layerId)[0] === 'stdio') return typeof def.url === 'string' ? 'remote' : 'stdio'
+  if (typesFor(layerId)[0] === 'stdio') return 'stdio'
   return typeof def.url === 'string' ? 'http' : 'proc'
 }
 

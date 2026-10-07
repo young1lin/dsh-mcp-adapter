@@ -10,11 +10,9 @@
  * @module dsh-mcp-adapter/config/service
  */
 
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { projectStandardLayers, globalStandardLayers, type StandardLayerPath } from './standard-paths.js'
 import { lstat } from 'node:fs/promises'
 import { maskDef, unmaskBody } from '../engine/mask.js'
-import { expandHome } from '../shared.js'
 import {
   emptyDoc, readStandardFile, upsertStandardEntry, writeStandardFile, validateEntry,
 } from './standard-repo.js'
@@ -39,8 +37,10 @@ export interface WorkspaceResolver {
 export interface ConfigServiceOptions {
   /** Plugin-private storage root (<dsh home>/mcp-manager). */
   storageDir: string
-  /** Global standard file (default ~/.agents/.mcp.json). */
+  /** Default: ~/.claude/.mcp.json then ~/.agents/.mcp.json; a custom file pins one layer. */
   globalFile?: string
+  /** Trusted embedding/test override; never supplied by the browser. */
+  homeDir?: string
   workspaceResolver?: WorkspaceResolver
 }
 
@@ -62,7 +62,7 @@ export type ConfigService = ReturnType<typeof createConfigService>
  * source of truth and may change externally at any time).
  */
 export function createConfigService(options: ConfigServiceOptions) {
-  const globalFile = resolve(expandHome(options.globalFile ?? join(homedir(), '.agents', '.mcp.json')))
+  const globalFiles = globalStandardLayers(options.globalFile, options.homeDir)
 
   function resolver(): WorkspaceResolver {
     return options.workspaceResolver ?? {
@@ -102,16 +102,32 @@ export function createConfigService(options: ConfigServiceOptions) {
     const mentions: Mention[] = []
     const problems: StandardFileProblem[] = []
 
-    // --- global standard ---
-    const g = await readStandardFile(globalFile)
-    const gProblem = g.problem ?? await standardProblem(globalFile, g.exists)
-    layers.push({ layerId: 'global:standard', level: 'global', source: 'standard', label: globalFile, exists: g.exists, revision: g.revision, ...(gProblem !== undefined ? { problem: gProblem } : {}) })
-    if (gProblem !== undefined) problems.push(gProblem)
-    if (gProblem === undefined) {
-      for (const [name, def] of Object.entries(g.servers)) {
-        mentions.push({ layerId: 'global:standard', name, level: 'global', source: 'standard', label: globalFile, def, disabled: def.disabled === true, revision: g.revision })
+    async function appendStandardLayers(files: StandardLayerPath[], level: 'global' | 'project'): Promise<void> {
+      for (const { layerId, path } of files) {
+        const doc = await readStandardFile(path)
+        const problem = doc.problem ?? await standardProblem(path, doc.exists)
+        layers.push({ layerId, level, source: 'standard', label: path, exists: doc.exists, revision: doc.revision, ...(problem !== undefined ? { problem } : {}) })
+        if (problem !== undefined) { problems.push(problem); continue }
+        for (const [name, def] of Object.entries(doc.servers)) {
+          // External files may contain malformed entries. Diagnose each one;
+          // never let a null definition take down the session setup barrier.
+          const invalid = validateEntry(name, def)
+          if (invalid !== undefined) {
+            problems.push({ path, code: 'BAD_SERVERS', message: invalid })
+            // An explicit disabled flag remains a tombstone even if the
+            // external command/env is malformed. Never resurrect lower tools.
+            if (def !== null && typeof def === 'object' && !Array.isArray(def) && def.disabled === true) {
+              mentions.push({ layerId, name, level, source: 'standard', label: path, def: { disabled: true }, disabled: true, revision: doc.revision })
+            }
+            continue
+          }
+          mentions.push({ layerId, name, level, source: 'standard', label: path, def, disabled: def.disabled === true, revision: doc.revision })
+        }
       }
     }
+
+    // --- global standard (Claude first, existing globalFile wins) ---
+    await appendStandardLayers(globalFiles, 'global')
 
     // --- global native ---
     const gCatPath = globalCatalogPath(options.storageDir)
@@ -125,21 +141,7 @@ export function createConfigService(options: ConfigServiceOptions) {
     // --- project scope ---
     const ws = input.workspaceId !== undefined ? resolver().resolve(input.workspaceId) : undefined
     if (ws !== undefined) {
-      const rootFiles = [join(ws.root, '.mcp.json'), join(ws.root, '.agents', '.mcp.json')]
-      let projectRevision = ''
-      for (const path of rootFiles) {
-        const layerId = path === rootFiles[0] ? 'project:root' : 'project:agents'
-        const doc = await readStandardFile(path)
-        const problem = doc.problem ?? await standardProblem(path, doc.exists)
-        layers.push({ layerId, level: 'project', source: 'standard', label: path, exists: doc.exists, revision: doc.revision, ...(problem !== undefined ? { problem } : {}) })
-        if (problem !== undefined) problems.push(problem)
-        if (problem === undefined) {
-          projectRevision = doc.revision
-          for (const [name, def] of Object.entries(doc.servers)) {
-            mentions.push({ layerId, name, level: 'project', source: 'standard', label: path, def, disabled: def.disabled === true, revision: doc.revision })
-          }
-        }
-      }
+      await appendStandardLayers(projectStandardLayers(ws.root), 'project')
       const pCatPath = projectCatalogPath(options.storageDir, sanitizeId(input.workspaceId))
       const pCat = await readCatalog(pCatPath)
       layers.push({ layerId: 'project:native', level: 'project', source: 'native', label: 'native:' + String(input.workspaceId), exists: Object.keys(pCat.catalog.entries).length > 0, revision: revisionOfCatalog(pCat.catalog) })
@@ -198,7 +200,7 @@ export function createConfigService(options: ConfigServiceOptions) {
     }
     const expectedLayer = input.source === 'session' ? 'session:overrides' : input.level + ':' + input.source
     if (input.layerId !== undefined && input.layerId !== expectedLayer &&
-      !(input.level === 'project' && input.source === 'standard' && ['project:root', 'project:agents'].includes(input.layerId))) {
+      !(input.source === 'standard' && standardPathFor(input.level, input.workspaceId, input.layerId) !== undefined)) {
       return Promise.reject({ code: 'SCOPE', message: 'layer does not belong to requested scope' })
     }
 
@@ -275,7 +277,7 @@ export function createConfigService(options: ConfigServiceOptions) {
     const source = entry.source === 'session' ? 'session' : entry.source
     if (entry.level === input.level && entry.source !== 'session') {
       const def = { ...entry.def, disabled: !input.enabled }
-      return saveEntry({ level: input.level, source, name: input.name, def: def as McpDefinition, expectedRevision: input.expectedRevision, layerId: input.layerId, workspaceId: input.workspaceId, sessionId: input.sessionId })
+      return saveEntry({ level: input.level, source, name: input.name, def: def as McpDefinition, expectedRevision: input.expectedRevision, layerId: input.layerId ?? entry.layerId, workspaceId: input.workspaceId, sessionId: input.sessionId })
     }
     // Enabling/disabling an INHERITED name at a higher level: copy the whole
     // inherited def (masked round-trip restores secrets) and set the mark.
@@ -298,14 +300,13 @@ export function createConfigService(options: ConfigServiceOptions) {
   }
 
   function standardPathFor(level: ScopeLevel, workspaceId?: string, layerId?: string): string | undefined {
-    if (level === 'global') return globalFile
+    if (level === 'global') return globalFiles.find((layer) => layer.layerId === (layerId ?? 'global:standard'))?.path
     const ws = workspaceId !== undefined ? resolver().resolve(workspaceId) : undefined
     if (ws === undefined) return undefined
-    // TASK 3.3: UI 默认新建写根文件；编辑已有项写它实际来源。The saveEntry
-    // caller passes the layer's own path context via level+workspace only, so
-    // project writes land in the ROOT file by default; editing an entry that
-    // lives in .agents/.mcp.json round-trips through its own revision.
-    return layerId === 'project:agents' ? join(ws.root, '.agents', '.mcp.json') : join(ws.root, '.mcp.json')
+    // New entries default to root; edits target their own controlled source
+    // and revision, including .claude and .agents. Never accept a raw path.
+    const selected = layerId === undefined || layerId === 'project:standard' ? 'project:root' : layerId
+    return projectStandardLayers(ws.root).find((layer) => layer.layerId === selected)?.path
   }
 
   return { preview, saveEntry, setEnabled }

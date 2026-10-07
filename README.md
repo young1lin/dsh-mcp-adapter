@@ -10,6 +10,8 @@
 - **MCP services page**: configure, start/stop, inspect tools/resources/prompts, execute tools, view per-MCP call logs (source-attributed `panel` vs `dsh-session`) and stderr. The Advanced page, public HTTP MCP endpoint, token management, and memory diagnostics are not offered.
 - **Security**: private stdio IPC between host and engine; the browser reaches management only through the same-origin `/dsh-mcp-manager` bridge behind a loopback/same-origin trust fence; secrets masked in every list DTO and sealed (DPAPI/machine-bound) at rest.
 
+In **Add MCP → JSON**, paste either a single server definition or a whole `{ "mcpServers": { "name": { … } } }` document. The first server is selected and its name is filled automatically; other servers are not saved by this single-entry editor (use bulk import for all entries). HTTP URL/headers and stdio command/args/env are supported; native/session targets convert stdio to a complete proc command line without discarding unknown options. Optional fields fold under **Advanced settings**.
+
 This build is **engine-only**: the engine starts by default; only explicitly setting `engine: false` is refused.
 
 ## Install
@@ -41,6 +43,18 @@ cd dsh-mcp-adapter && npm install && npm run build   # dist/ is required; git ha
 ```
 
 Then link the checkout into the profile (`~/.dsh/profiles/web/node_modules/@young1lin/dsh-mcp-adapter` → this repo) and use the same two-line patch entry above. After pulling new commits: `npm run build`, restart dsh web.
+
+## Config discovery & deduplication
+
+Default standard sources, lowest precedence first:
+
+- Global: `~/.claude/.mcp.json` → `~/.agents/.mcp.json`.
+- Project: `.claude/.mcp.json` → root `.mcp.json` → `.agents/.mcp.json`.
+- Across scopes: global → project → session.
+
+Merge by MCP name, replacing whole entries rather than stitching fields; `disabled: true` masks lower sources. Identical definitions under different names share one engine instance while keeping their tool namespaces. Same-scope standard/native clashes remain explicit conflicts. Discovery never migrates or rewrites files; edits target the original source and its revision. Missing files are normal; malformed files/entries are diagnosed and isolated from healthy servers. The misspelling `.cluade` is not a config directory.
+
+An explicit non-default `globalFile` still pins one global standard file instead of loading the default pair, preventing unexpected home-directory tools.
 
 ## Scope & timing semantics
 
