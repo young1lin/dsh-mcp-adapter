@@ -111,3 +111,58 @@ test('failed setup still continues the real agent-id waterfall exactly once, on 
   assert.equal(calls, 2, 'next invoked once per step, even after registration failure')
   assert.ok(errors.some((line) => line.includes('broken config fixture')))
 })
+
+test('real agent rounds keep frozen tools; new and recreated contexts cannot drift or release each other', { timeout: 30000 }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-turn-freeze-'))
+  const storageDir = join(dir, 'store'), root = join(dir, 'ws'), globalFile = join(dir, 'global.json')
+  mkdirSync(root)
+  const def = { command: process.execPath, args: [fileURLToPath(new URL('./fixtures/slow-mcp.mjs', import.meta.url))] }
+  writeFileSync(globalFile, JSON.stringify({ mcpServers: { original: def } }))
+  const config = createConfigService({ storageDir, globalFile, workspaceResolver: { resolve: id => id === 'ws' ? { root } : undefined } })
+  const supervisor = createEngineSupervisor({ storageDir }, quiet)
+  const handlers = new Map(), cleanup = []
+  const host = { logger: quiet, on: (name, fn) => { handlers.set(name, fn); return () => handlers.delete(name) }, effect: fn => { cleanup.push(fn()); return () => {} } }
+  const old = agentContext(), replacement = agentContext(), fresh = agentContext()
+  t.after(async () => {
+    for (const ctx of [old, replacement, fresh]) ctx.dispose()
+    for (const fn of cleanup) fn?.()
+    publishRuntime(undefined)
+    await supervisor.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  await supervisor.ensure()
+  publishRuntime({ engine: supervisor, config, storageDir, workspaceIdFor: () => 'ws' })
+  assert.equal(mountAgentPlane(host), true)
+  const created = (id, ctx) => handlers.get('agent/created')({ agent: { id, ctx, session: { header: { cwd: root } } } })
+  const decision = { kind: 'enter', messages: [] }
+  const step = (id, ctx) => within(handlers.get('agent/pre-step')({ agent: { id, ctx } }, () => decision))
+  created('existing', old)
+  assert.equal(await step('existing', old), decision)
+  const descriptor = old.registered[0]
+  const catalog = old.registered.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))
+  const snapshot = (await readSessionFile(sessionFilePath(storageDir, 'existing'))).file.snapshot
+  writeFileSync(globalFile, JSON.stringify({ mcpServers: { added: { ...def, env: { MCP_TEST_GENERATION: 'new' } } } }))
+  for (let round = 0; round < 3; round++) {
+    created('existing', old)
+    assert.equal(await step('existing', old), decision)
+    assert.equal(old.registered[0], descriptor, 'later rounds never re-register the same context')
+    assert.deepEqual(old.registered.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })), catalog)
+    await config.preview({ workspaceId: 'ws' }) // settings/page reads are not installs
+    assert.equal((await within(descriptor.execute({ msg: 'round' }, {}))).content[0].text, 'round:old')
+  }
+  assert.deepEqual((await readSessionFile(sessionFilePath(storageDir, 'existing'))).file.snapshot, snapshot)
+  created('brand-new', fresh)
+  assert.equal(await step('brand-new', fresh), decision)
+  assert.deepEqual(fresh.registered.map(tool => tool.name), ['mcp__added__echo'])
+  assert.equal((await within(fresh.registered[0].execute({ msg: 'new' }, {}))).content[0].text, 'new:new')
+  // A -> B -> duplicate A: both contexts keep exactly one OLD descriptor.
+  created('existing', replacement)
+  assert.equal(await step('existing', replacement), decision)
+  created('existing', old)
+  assert.equal(await step('existing', old), decision)
+  assert.deepEqual(replacement.registered.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })), catalog)
+  assert.equal(old.registered.length, 1)
+  old.dispose()
+  assert.equal(await step('existing', replacement), decision)
+  assert.equal((await within(replacement.registered[0].execute({ msg: 'after-old-disposal' }, {}))).content[0].text, 'after-old-disposal:old')
+})

@@ -31,8 +31,8 @@
  *   from the frozen def. A server whose snapshot generation cannot be
  *   brought back (broken command, vanished adapter) is reported unavailable
  *   for that session; it is NEVER silently substituted with the current
- *   config (no privilege drift). Legacy v1 snapshots are not restorable and
- *   recompute once, upgrading the file to v2.
+ *   config (no privilege drift). Legacy or malformed generations fail closed;
+ *   missing frozen schemas are never replaced from current configuration.
  *
  * Cleanup / leases:
  *   The runtime keeps per-process leases (instance -> owning sessionIds).
@@ -384,7 +384,9 @@ export async function resolveRuntimeServices(logger: Logger, options: { toolCall
 
 /** One engine instance lease: the sessions currently holding it. */
 interface Lease {
-  refs: Set<string>
+  /** A recreated context can overlap the previous context for the SAME id. */
+  refs: Map<string, number>
+  definitionKey: string
 }
 
 /** The session runtime handle returned by createSessionRuntime. */
@@ -426,6 +428,17 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
   const leases = new Map<string, Lease>()
   /** In-flight engine release calls, for settleReleases(). */
   const releasing = new Set<Promise<void>>()
+  // Serialize setup + last-owner release for ONE definition only. A delayed
+  // release must not delete a generation which a recreated context just took.
+  const definitionLanes = new Map<string, Promise<unknown>>()
+  function inDefinitionLane<T>(key: string, action: () => Promise<T>): Promise<T> {
+    const previous = definitionLanes.get(key) ?? Promise.resolve()
+    const job = previous.catch(() => undefined).then(action)
+    definitionLanes.set(key, job)
+    const done = () => { if (definitionLanes.get(key) === job) definitionLanes.delete(key) }
+    void job.then(done, done)
+    return job
+  }
   /** mcp.release probe result: undefined = not probed yet. */
   let releaseSupported: boolean | undefined
   /**
@@ -577,9 +590,9 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     }
   }
 
-  function acquire(instance: string, sessionId: string): void {
-    const lease = leases.get(instance) ?? { refs: new Set<string>() }
-    lease.refs.add(sessionId)
+  function acquire(instance: string, sessionId: string, def: McpDefinition): void {
+    const lease = leases.get(instance) ?? { refs: new Map<string, number>(), definitionKey: defKeyOf(def) }
+    lease.refs.set(sessionId, (lease.refs.get(sessionId) ?? 0) + 1)
     leases.set(instance, lease)
   }
 
@@ -628,16 +641,19 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
   function release(instance: string, sessionId: string): void {
     const lease = leases.get(instance)
     if (lease === undefined) return
-    lease.refs.delete(sessionId)
+    const refs = lease.refs.get(sessionId) ?? 0
+    if (refs === 0) return
+    if (refs > 1) lease.refs.set(sessionId, refs - 1)
+    else lease.refs.delete(sessionId)
     if (lease.refs.size > 0) return // other sessions still hold this generation
-    leases.delete(instance)
-    // The instance is about to leave the engine, so its warm entry stops
-    // being true: a later install of the same def must re-resolve (and
-    // re-ensure) rather than register tools that address a dead name.
-    for (const [key, entry] of warm) {
-      if (entry.instance === instance) warm.delete(key)
-    }
-    void releaseOnEngine(instance)
+    const job = inDefinitionLane(lease.definitionKey, async () => {
+      if (leases.get(instance) !== lease || lease.refs.size > 0) return
+      leases.delete(instance)
+      for (const [key, entry] of warm) if (entry.instance === instance) warm.delete(key)
+      await releaseOnEngine(instance)
+    })
+    releasing.add(job)
+    void job.then(() => releasing.delete(job), () => releasing.delete(job))
   }
 
   /** Register one frozen tool; the executor addresses the INSTANCE name. */
@@ -647,6 +663,7 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     registered: string[],
     server: { instance: string; logical: string },
     tool: SnapshotTool,
+    unavailable = false,
   ): void {
     const publicName = publicNameLite(server.logical, tool.name)
     disposers.push(agentCtx.tools.register({
@@ -654,7 +671,10 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
       description: tool.description ?? '',
       parameters: tool.inputSchema,
       output: createOutputLite(tool.name),
-      execute: async (args, exec) => await callEngine(server.instance, tool.name, args, exec),
+      execute: async (args, exec) => {
+        if (unavailable) throw Object.assign(new Error('Frozen MCP ' + server.logical + ' is unavailable in this conversation'), { code: 'E_MCP_UNAVAILABLE' })
+        return await callEngine(server.instance, tool.name, args, exec)
+      },
     }))
     registered.push(publicName)
   }
@@ -680,9 +700,16 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     for (const server of snapshot.servers) {
       // Frozen def, frozen instance name — never the current preview. A
       // server that cannot come back is unavailable; no substitution (R3).
-      const instance = await ensureInstance({ instance: server.instance, def: server.def, logical: server.logical })
+      const instance = await inDefinitionLane(defKeyOf(server.def), async () => {
+        const found = await ensureInstance({ instance: server.instance, def: server.def, logical: server.logical })
+        if (found !== undefined) acquire(found, sessionId, server.def)
+        return found
+      })
       if (instance === undefined) {
         unavailable.push(server.logical)
+        // Keep the exact frozen descriptors even when that generation cannot
+        // return. The body fails locally; it never addresses a replacement.
+        for (const tool of server.tools) registerTool(agentCtx, disposers, registered, server, tool, true)
         continue
       }
       // The lease and every tool call address what the engine answered, not
@@ -690,7 +717,6 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
       // definition is the point, and a lease on a name nothing hosts would
       // never be released.
       instances.push(instance)
-      acquire(instance, sessionId)
       for (const tool of server.tools) {
         registerTool(agentCtx, disposers, registered, { ...server, instance }, tool)
       }
@@ -735,21 +761,20 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
       // and if the warm cache already resolved this def on this engine
       // child, no round trip happens at all (see resolveServer).
       const minted = instanceNameFor(workspaceId, entry.name, def)
-      const resolved = await resolveServer(def, entry.name, minted)
+      const resolved = await inDefinitionLane(defKeyOf(def), async () => {
+        const found = await resolveServer(def, entry.name, minted)
+        if (found !== undefined) acquire(found.instance, sessionId, def)
+        return found
+      })
       if (resolved === undefined) {
         unavailable.push(entry.name)
         continue
       }
       const { instance, tools } = resolved
       instances.push(instance)
-      acquire(instance, sessionId)
       servers.push({ logical: entry.name, instance, def, tools })
-      for (const tool of tools) {
-        registerTool(agentCtx, disposers, registered, { instance, logical: entry.name }, tool)
-      }
+      // Do not publish descriptors before winning the immutable snapshot CAS.
     }
-
-    if (disposers.length > 0 || instances.length > 0) attachLifecycle(agentCtx, instances, sessionId, disposers)
 
     // Freeze the generation ONCE. A lost race with another writer (the
     // per-path lock serializes file access) keeps the existing snapshot.
@@ -760,10 +785,19 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
       configRevision: configRevisionOf(preview),
       servers,
     }
-    const written = await writeSnapshotImmutable(snapshotPath, snapshot)
-    if (!written.wrote && written.current === undefined) {
-      warn('session ' + sessionId + ' snapshot not persisted (session file unreadable) — restore will recompute')
+    let written: Awaited<ReturnType<typeof writeSnapshotImmutable>>
+    try { written = await writeSnapshotImmutable(snapshotPath, snapshot) }
+    catch (error) {
+      for (const instance of instances) release(instance, sessionId)
+      throw error
     }
+    if (!written.wrote) {
+      for (const instance of instances) release(instance, sessionId)
+      if (isRestorableSnapshot(written.current)) return await restoreFromSnapshot(agentCtx, sessionId, written.current)
+      throw Object.assign(new Error('Cannot persist an immutable MCP snapshot for session ' + sessionId), { code: 'E_SNAPSHOT_UNAVAILABLE' })
+    }
+    for (const server of servers) for (const tool of server.tools) registerTool(agentCtx, disposers, registered, server, tool)
+    if (disposers.length > 0 || instances.length > 0) attachLifecycle(agentCtx, instances, sessionId, disposers)
     if (active.length > MAX_SERVERS_PER_SNAPSHOT) {
       warn('workspace has ' + String(active.length) + ' active servers; snapshot keeps ' + String(MAX_SERVERS_PER_SNAPSHOT))
     }
@@ -774,12 +808,12 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     async install(agentCtx, sessionId, workspaceId) {
       const path = sessionFilePath(deps.storageDir, sessionId)
       const { file, problem } = await readSessionFile(path)
-      if (problem !== undefined) {
-        // Read-only signal: install may proceed from the preview, but no
-        // snapshot is written (the file must not be overwritten).
-        warn(problem + ' — session ' + sessionId + ' starts fresh without a persisted snapshot')
+      if (problem !== undefined || (file.snapshot !== undefined && !isRestorableSnapshot(file.snapshot))) {
+        // Existing but unreadable/legacy generations must never adopt today's
+        // config. Missing definitions cannot be honestly reconstructed.
+        throw Object.assign(new Error('Cannot safely restore the MCP snapshot for session ' + sessionId), { code: 'E_SNAPSHOT_UNAVAILABLE' })
       }
-      if (problem === undefined && isRestorableSnapshot(file.snapshot)) {
+      if (isRestorableSnapshot(file.snapshot)) {
         return await restoreFromSnapshot(agentCtx, sessionId, file.snapshot)
       }
       return await installFresh(agentCtx, sessionId, workspaceId, path)

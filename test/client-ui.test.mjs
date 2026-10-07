@@ -422,63 +422,35 @@ test('pages (R5): editor keeps the OPEN revision, never previews on save, and a 
   assert.equal(textareas(mini).length, 0, 'editor closed after success')
 })
 
-test('pages: session tab splits snapshot / current / pending and writes session overrides with ss + layerId', { skip: bundleSkipped }, async () => {
+test('pages: session tab defaults to frozen catalog; future config is opt-in and read-only', { skip: bundleSkipped }, async () => {
   const mini = makeMiniReact()
-  const calls = stubFetch((call) => {
-    if (call.url.startsWith('/preview')) {
-      return { status: 200, json: {
-        layers: [
-          { level: 'global', source: 'standard', layerId: 'global:standard', label: 'l', exists: true, revision: 'gr1' },
-          { level: 'session', source: 'session', layerId: 'session:overrides', label: 's', exists: true, revision: 'srev1' },
-        ],
-        entries: [
-          { name: 'beta', level: 'global', source: 'standard', layerId: 'global:standard', def: { command: 'node b.js' }, inherited: false, overrides: [], disabled: false, revision: 'gr1' },
-          { name: 'gamma', level: 'session', source: 'session', layerId: 'session:overrides', def: { command: 'node g.js' }, inherited: false, overrides: ['l'], disabled: false, revision: 'srev1', pending: true },
-          { name: 'delta', level: 'global', source: 'standard', layerId: 'global:standard', def: { command: 'node d.js', disabled: true }, inherited: false, overrides: [], disabled: true, revision: 'gr1' },
-        ],
-        conflicts: [], problems: [],
-      } }
-    }
-    if (call.url.startsWith('/session')) {
-      return { status: 200, json: { sessionId: 'sess-1', revision: 'srev1', snapshot: { revision: 'snap1', registeredAt: '2026-02-01T00:00:00Z', tools: ['mcp__beta__query'] } } }
-    }
-    if (call.url.startsWith('/entry')) return { status: 200, json: { revision: 'srev2' } }
-    return { status: 500, json: { error: 'no route' } }
+  const calls = stubFetch(call => {
+    if (call.url.startsWith('/session')) return { status: 200, json: { sessionId: 'sess-1', revision: 'r', capabilities: { nextSessionPreview: true }, snapshot: { revision: 's', registeredAt: '2026-02-01T00:00:00Z', tools: ['mcp__beta__query'] } } }
+    if (call.url.startsWith('/preview')) return { status: 200, json: { ...previewDoc(), forNextSession: true, entries: [{ name: 'new-gamma', level: 'global', source: 'standard', layerId: 'global:standard', def: { command: 'node' }, disabled: false, revision: 'r' }] } }
+    return { status: 500, json: { error: 'Unexpected write' } }
   })
-  const startNextCalls = []
-  // The REAL host path: index.ts derives startNext from ctx.get('sessions').
-  const createdOpts = []
-  const opened = []
-  const sessionsFace = {
-    create: async (opts) => { createdOpts.push(opts); return 'new-sess-9' },
-    open: (id) => { opened.push(id) },
-    list: { getSnapshot: () => ({ byId: { 'sess-1': { cwd: 'C:/ws/probe' } } }) },
-  }
+  const createdOpts = [], opened = []
+  const sessionsFace = { create: async opts => { createdOpts.push(opts); return 'new-sess-9' }, open: id => opened.push(id), list: { getSnapshot: () => ({ byId: { 'sess-1': { cwd: 'C:/ws/probe' } } }) } }
   const { registrations } = await loadClient(mini, { sessions: sessionsFace })
-  const view = registrations.find((r) => r.slot === 'conversation.view')
-  assert.ok(view !== undefined, 'conversation.view registered')
+  const view = registrations.find(r => r.slot === 'conversation.view')
   mini.render(mini.createElement(view.component, { sessionId: 'sess-1' }))
   await flush()
-  assert.ok(findText(mini, '2026-02-01T00:00:00Z'), 'snapshot registeredAt shown')
-  assert.ok(findText(mini, 'mcp__beta__query'), 'snapshot tools shown')
-  assert.ok(findText(mini, 'session:overrides'), 'pending override tagged with its layerId')
-  assert.ok(findText(mini, 'gamma'), 'pending override listed')
-  await openRowMenu(mini, 'delta')
-  assert.ok(findText(mini, 'fixAtSource'), 'inherited disable explained instead of a bogus session enable')
-  // Disable beta for this session -> tombstone on session:overrides with ss in the query.
-  await openRowMenu(mini, 'beta')
-  await clickInRow(mini, 'beta', 'disableHere')
-  const save = calls.filter((c) => c.url.startsWith('/entry')).at(-1)
-  assert.equal(save.url, '/entry?ss=sess-1')
-  assert.deepEqual(save.body, { layerId: 'session:overrides', level: 'session', source: 'session', name: 'beta', def: { disabled: true }, expectedRevision: 'srev1' })
-  // Verified host action: create({cwd}) then open(id):
+  assert.ok(findText(mini, 'beta'))
+  assert.ok(findText(mini, 'query'))
+  assert.equal(findText(mini, 'mcp__beta__query'), false, 'full IDs are not prose')
+  assert.equal(findText(mini, 'new-gamma'), false)
+  assert.equal(calls.some(call => call.url.startsWith('/preview')), false, 'default view never substitutes latest config')
+  await clickButton(mini, 'sessionConfigTab')
+  assert.ok(findText(mini, 'new-gamma'))
+  assert.ok(calls.some(call => call.url === '/preview?ss=sess-1&next=1'))
   await clickButton(mini, 'startNext')
   assert.deepEqual(createdOpts, [{ cwd: 'C:/ws/probe' }])
   assert.deepEqual(opened, ['new-sess-9'])
-  assert.ok(findText(mini, 'startedNext'), 'success note shown')
+  assert.ok(calls.every(call => call.method === 'GET'), 'conversation view never rewrites config or reloads tools')
 })
 
-test('pages: session tab disables start-next with an explanation when the host face is absent', { skip: bundleSkipped }, async () => {
+
+test('pages: session tab hides unavailable start-next rather than showing a disabled panel', { skip: bundleSkipped }, async () => {
   const mini = makeMiniReact()
   stubFetch((call) => {
     if (call.url.startsWith('/preview')) return { status: 200, json: previewDoc() }
@@ -490,9 +462,9 @@ test('pages: session tab disables start-next with an explanation when the host f
   mini.render(mini.createElement(view.component, { sessionId: 'sess-1' }))   // no startNext
   await flush()
   const buttons = findAll(mini.tree(), (el) => el.type === 'button' && el.props['aria-label'] === 'startNext')
-  assert.equal(buttons.length, 1)
-  assert.equal(buttons[0].el.props.disabled, true, 'start-next disabled without the sessions service')
-  assert.ok(findText(mini, 'startNextUnavailable'), 'explanation shown')
+  assert.equal(buttons.length, 0)
+  assert.equal(findText(mini, 'startNextUnavailable'), false)
+  assert.ok(findText(mini, 'sessionSnapshotMissing'), 'missing snapshot never becomes current config')
 })
 
 test('pages (wired bridge): MCP services renders data and lifecycle actions without Advanced requests', { skip: bundleSkipped }, async () => {
@@ -603,6 +575,14 @@ function cssRule(selector) {
 function findClass(mini, cls) {
   return findAll(mini.tree(), (el) => typeof el.props.className === 'string' && el.props.className.split(' ').includes(cls))
 }
+
+test('css: conversation view centers in its pane and hides only the inert chat-width siblings', () => {
+  assert.match(cssRule('.mmc-root.mmc-session'), /max-width:800px/)
+  assert.match(cssRule('.mmc-root.mmc-session'), /margin-inline:auto/)
+  assert.match(cssRule('[data-conversation-scroll]:has(.mmc-session) ~ [data-width-handle]'), /display:none/)
+  assert.equal(uiMod.css.split(String.fromCharCode(10)).some(line => line.trim().startsWith('[data-width-handle]{')), false, 'no global handle override')
+  assert.doesNotMatch(cssRule('.mmc-root.mmc-session'), /height:100%|overflow:auto/, 'host owns scroll height')
+})
 
 test('css: an entry row reflows in a narrow pane instead of clipping its last action', () => {
   // Root cause of the clipped "Dele": the row was a nowrap flex row whose

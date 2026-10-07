@@ -187,3 +187,91 @@ test('editor DOM: explicit conflict reload refreshes revision without losing dra
   assert.deepEqual(saves.map((b) => b.expectedRevision), ['r1', 'r2'])
   assert.deepEqual(saves[1].def, saves[0].def, 'explicit reload keeps the JSON draft')
 })
+
+const { makeSessionTab } = await import('../dist/client/pages/session.js')
+const sessionDto = (id, name = 'original') => ({ sessionId: id, revision: 'session-r', capabilities: { nextSessionPreview: true }, snapshot: { revision: 'frozen-r', registeredAt: '2026-01-01T00:00:00Z', restorable: true, tools: ['mcp__' + name + '__query'], servers: [{ name, transport: 'http', tools: [{ name: 'query', publicName: 'mcp__' + name + '__query', description: 'Frozen tool description' }] }] } })
+const sessionButton = (container, key) => [...container.querySelectorAll('button')].find(el => el.textContent === key || el.getAttribute('aria-label') === key)
+const response = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
+
+test('session DOM: new config and refresh never appear in the frozen default toolset', async t => {
+  const requests = []
+  const future = { forNextSession: true, layers: [], entries: [{ name: 'new-only', level: 'global', layerId: 'global:native', def: { type: 'echo' } }], conflicts: [], problems: [] }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    requests.push({ url: String(url), method: init.method })
+    return response(String(url).includes('/session?') ? sessionDto('one') : future)
+  })
+  const Tab = makeSessionTab(React, kit(React))
+  const container = await render(t, h(Tab, { t: key => key, sessionId: 'one' }))
+  assert.equal(container.querySelectorAll('.mmc-session-service').length, 1)
+  assert.equal(container.textContent.includes('new-only'), false)
+  assert.ok(requests.every(req => req.url.includes('/session?')))
+  await act(async () => sessionButton(container, 'refresh').click())
+  assert.equal(container.textContent.includes('new-only'), false)
+  assert.equal(container.querySelector('.mmc-session-tool code').textContent, 'query')
+  assert.equal(container.querySelector('.mmc-session-tool code').title, 'mcp__original__query')
+  await act(async () => sessionButton(container, 'sessionConfigTab').click())
+  assert.equal(container.querySelector('.mmc-session-registered'), null)
+  assert.ok(container.textContent.includes('new-only'))
+  assert.ok(requests.some(req => req.url.endsWith('/preview?ss=one&next=1')))
+  await act(async () => sessionButton(container, 'sessionRegisteredTab').click())
+  assert.equal(container.textContent.includes('new-only'), false)
+  assert.ok(requests.every(req => req.method === 'GET'), 'no mutation/test/install calls')
+})
+
+for (const snapshot of [undefined, { revision: 'old', registeredAt: 'then', tools: ['mcp__old__query'], restorable: false }]) {
+  test('session DOM: missing or unsafe snapshot cannot be replaced with latest config: ' + (snapshot ? 'legacy' : 'missing'), async t => {
+    const requests = []
+    t.mock.method(globalThis, 'fetch', async url => { requests.push(String(url)); return response({ sessionId: 'one', revision: 'r', snapshot }) })
+    const Tab = makeSessionTab(React, kit(React))
+    const container = await render(t, h(Tab, { t: key => key, sessionId: 'one' }))
+    assert.equal(container.querySelectorAll('.mmc-session-service').length, 0)
+    assert.ok(container.textContent.includes(snapshot ? 'sessionSnapshotLegacy' : 'sessionSnapshotMissing'))
+    assert.ok(requests.every(url => url.includes('/session?')))
+    assert.equal(sessionButton(container, 'startNext'), undefined)
+  })
+}
+
+test('session DOM: damaged snapshot is not mislabeled as unrecorded or replaced by current config', async t => {
+  t.mock.method(globalThis, 'fetch', async () => response({ sessionId: 'one', revision: 'r', snapshotProblem: 'unreadable' }))
+  const Tab = makeSessionTab(React, kit(React))
+  const container = await render(t, h(Tab, { t: key => key, sessionId: 'one' }))
+  assert.ok(container.textContent.includes('sessionSnapshotUnreadable'))
+  assert.equal(container.textContent.includes('sessionSnapshotMissing'), false)
+  assert.equal(container.querySelectorAll('.mmc-session-service').length, 0)
+})
+
+test('session DOM: late response from another conversation cannot repaint the new conversation', async t => {
+  let resolveOld, changeSession
+  t.mock.method(globalThis, 'fetch', url => String(url).endsWith('ss=old') ? new Promise(resolve => { resolveOld = () => resolve(response(sessionDto('old', 'wrong-old'))) }) : Promise.resolve(response(sessionDto('new', 'correct-new'))))
+  const Tab = makeSessionTab(React, kit(React))
+  function Host() { const [id, setId] = React.useState('old'); changeSession = setId; return h(Tab, { t: key => key, sessionId: id }) }
+  const container = await render(t, h(Host))
+  await act(async () => changeSession('new'))
+  assert.ok(container.textContent.includes('correct-new'))
+  await act(async () => resolveOld())
+  assert.equal(container.textContent.includes('wrong-old'), false)
+  assert.ok(container.textContent.includes('correct-new'))
+})
+
+test('session DOM: old backend keeps its snapshot usable and never displays an upgrade-error panel', async t => {
+  const requests = []
+  t.mock.method(globalThis, 'fetch', async url => { requests.push(String(url)); const dto = sessionDto('one'); delete dto.capabilities; return response(dto) })
+  const Tab = makeSessionTab(React, kit(React))
+  const container = await render(t, h(Tab, { t: key => key, sessionId: 'one' }))
+  assert.ok(container.textContent.includes('original'))
+  assert.equal(sessionButton(container, 'sessionConfigTab'), undefined)
+  assert.equal(container.textContent.includes('sessionNextUnsupported'), false)
+  await act(async () => sessionButton(container, 'refresh').click())
+  assert.ok(requests.every(url => url.includes('/session?')))
+})
+
+test('session DOM: latest config failure and an old host contract cannot hide the frozen tools', async t => {
+  t.mock.method(globalThis, 'fetch', async url => response(String(url).includes('/session?') ? sessionDto('one') : { entries: [{ name: 'unverified-new', def: {} }], layers: [] }))
+  const Tab = makeSessionTab(React, kit(React))
+  const container = await render(t, h(Tab, { t: key => key, sessionId: 'one' }))
+  await act(async () => sessionButton(container, 'sessionConfigTab').click())
+  assert.ok(container.textContent.includes('sessionNextUnsupported'))
+  assert.equal(container.textContent.includes('unverified-new'), false)
+  await act(async () => sessionButton(container, 'sessionRegisteredTab').click())
+  assert.ok(container.textContent.includes('original'))
+})

@@ -11,7 +11,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -129,6 +129,113 @@ function makeRuntime(supervisor, config, storageDir) {
 function scratch() {
   return mkdtempSync(join(tmpdir(), 'mcp-sessionrt-'))
 }
+
+test('restored context with the same session id retains its lease after old context disposal', async () => {
+  const dir = scratch()
+  const supervisor = fakeSupervisor({ supportRelease: true, toolsOf: () => [{ name: 'echo', description: 'fixed', inputSchema: { type: 'object' } }] })
+  const config = fakeConfig([echoEntry('demo', { type: 'echo' })])
+  const runtime = makeRuntime(supervisor, config, dir)
+  const old = fakeAgentContext(), restored = fakeAgentContext()
+  try {
+    await runtime.install(old, 'same-id', 'ws')
+    const descriptor = old.registered[0]
+    config.setEntries([echoEntry('new-only', { type: 'echo', description: 'new-config' })])
+    await runtime.install(restored, 'same-id', 'ws')
+    assert.equal(restored.registered[0].name, descriptor.name)
+    assert.deepEqual(restored.registered[0].parameters, descriptor.parameters)
+    old.dispose()
+    await runtime.settleReleases()
+    assert.equal(supervisor.released.length, 0, 'old context must not release the replacement context’s lease')
+    await restored.registered[0].execute({ msg: 'still callable' }, {})
+    restored.dispose()
+    await runtime.settleReleases()
+    assert.equal(supervisor.released.length, 1)
+  } finally { old.dispose(); restored.dispose(); await runtime.settleReleases(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('reacquisition waits for a delayed last-owner release instead of binding a disappearing instance', { timeout: 5000 }, async () => {
+  const dir = scratch()
+  const supervisor = fakeSupervisor({ supportRelease: true, toolsOf: () => [{ name: 'echo' }] })
+  const request = supervisor.request.bind(supervisor)
+  let resume, started
+  const gate = new Promise(resolve => { resume = resolve })
+  const entered = new Promise(resolve => { started = resolve })
+  supervisor.request = async (method, params) => {
+    if (method === 'mcp.release') { started(); await gate }
+    return request(method, params)
+  }
+  const runtime = makeRuntime(supervisor, fakeConfig([echoEntry('demo', { type: 'echo' })]), dir)
+  const old = fakeAgentContext(), restored = fakeAgentContext()
+  try {
+    await runtime.install(old, 'handoff', 'ws')
+    old.dispose()
+    await entered
+    const pending = runtime.install(restored, 'handoff', 'ws')
+    assert.equal(restored.registered.length, 0)
+    resume()
+    await pending
+    await restored.registered[0].execute({ msg: 'alive after release' }, {})
+    const addressed = supervisor.calls.filter(call => call.method === 'mcp.call').at(-1).params.name
+    assert.equal(supervisor.instances.has(addressed), true)
+  } finally { resume(); old.dispose(); restored.dispose(); await runtime.settleReleases(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('corrupt existing snapshot fails closed without starting current config or overwriting bytes', async () => {
+  const dir = scratch()
+  try {
+    const path = sessionFilePath(dir, 'corrupt')
+    await writeSessionFile(path, { schemaVersion: 1, overrides: {} })
+    writeFileSync(path, 'not JSON')
+    const supervisor = fakeSupervisor()
+    const config = { preview: async () => { throw new Error('must never read new config') } }
+    const runtime = makeRuntime(supervisor, config, dir)
+    await assert.rejects(runtime.install(fakeAgentContext(), 'corrupt', 'ws'), error => error.code === 'E_SNAPSHOT_UNAVAILABLE')
+    assert.equal(supervisor.calls.length, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('malformed readable v2 snapshot is rejected atomically, never shrunk or replaced', async () => {
+  const dir = scratch()
+  try {
+    const path = sessionFilePath(dir, 'malformed')
+    await writeSessionFile(path, { schemaVersion: 1, overrides: {}, snapshot: { version: 2, workspaceId: 'ws', configRevision: 'r', registeredAt: 'at', servers: [{ logical: 'old', instance: 'old-instance', def: { type: 'echo' }, tools: [{ name: 'good' }, { name: '' }] }] } })
+    const parsed = await readSessionFile(path)
+    assert.ok(parsed.problem, 'malformed descriptor invalidates the generation, not just one tool')
+    const supervisor = fakeSupervisor()
+    const runtime = makeRuntime(supervisor, { preview: async () => { throw new Error('must not re-read current config') } }, dir)
+    await assert.rejects(runtime.install(fakeAgentContext(), 'malformed', 'ws'), error => error.code === 'E_SNAPSHOT_UNAVAILABLE')
+    assert.equal(supervisor.calls.length, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('concurrent first installs use only the generation which won immutable snapshot persistence', { timeout: 5000 }, async () => {
+  const dir = scratch()
+  let resume, started
+  const entered = new Promise(resolve => { started = resolve })
+  const gate = new Promise(resolve => { resume = resolve })
+  const supervisor = fakeSupervisor({ supportRelease: true, toolsOf: instance => [{ name: instance.def.description }] })
+  const request = supervisor.request.bind(supervisor)
+  supervisor.request = async (method, params) => {
+    if (method === 'mcp.tools' && supervisor.instances.get(params.name)?.def.description === 'old') { started(); await gate }
+    return await request(method, params)
+  }
+  const config = fakeConfig([echoEntry('demo', { type: 'echo', description: 'old' })])
+  const runtime = makeRuntime(supervisor, config, dir)
+  const old = fakeAgentContext(), winner = fakeAgentContext()
+  try {
+    const pending = runtime.install(old, 'race', 'ws')
+    await entered
+    config.setEntries([echoEntry('demo', { type: 'echo', description: 'winner' })])
+    await runtime.install(winner, 'race', 'ws')
+    resume()
+    await pending
+    const snapshot = (await readSessionFile(sessionFilePath(dir, 'race'))).file.snapshot
+    assert.equal(snapshot.servers[0].def.description, 'winner')
+    assert.deepEqual(old.registered.map(tool => tool.name), winner.registered.map(tool => tool.name))
+    assert.deepEqual(old.registered.map(tool => tool.name), ['mcp__demo__winner'])
+    await old.registered[0].execute({}, {})
+  } finally { resume(); old.dispose(); winner.dispose(); await runtime.settleReleases(); rmSync(dir, { recursive: true, force: true }) }
+})
 
 // --- tests ---------------------------------------------------------------------------------------
 
@@ -351,7 +458,10 @@ test('R3: an un-restorable generation is reported unavailable, never substituted
     const summary = await runtime2.install(agent2, 'sess-broken', 'C:\ws\a')
     assert.equal(summary.restored, true)
     assert.deepEqual(summary.unavailable, ['demo'])
-    assert.equal(agent2.registered.length, 0, 'no tools smuggled in from the current preview')
+    assert.equal(agent2.registered.length, 1, 'the frozen descriptor is retained, not dropped or substituted')
+    assert.equal(agent2.registered[0].name, 'mcp__demo__echo')
+    await assert.rejects(agent2.registered[0].execute({ msg: 'no replacement' }), error => error.code === 'E_MCP_UNAVAILABLE')
+    assert.equal(supervisor2.calls.filter(c => c.method === 'mcp.call').length, 0, 'unavailable body fails locally')
     assert.equal(supervisor2.calls.filter((c) => c.method === 'mcp.ensure').length, 1, 'only the frozen instance was attempted')
 
     // the snapshot is not rewritten by the failure
@@ -362,7 +472,7 @@ test('R3: an un-restorable generation is reported unavailable, never substituted
   }
 })
 
-test('legacy v1 snapshots stay readable, recompute once, and upgrade to v2', async () => {
+test('legacy v1 snapshots stay readable but never adopt current config', async () => {
   const dir = scratch()
   try {
     const path = sessionFilePath(dir, 'sess-legacy')
@@ -372,10 +482,12 @@ test('legacy v1 snapshots stay readable, recompute once, and upgrade to v2', asy
     const config = fakeConfig([echoEntry('demo', { type: 'echo' })])
     const runtime = makeRuntime(supervisor, config, dir)
     const agent = fakeAgentContext()
-    const summary = await runtime.install(agent, 'sess-legacy', 'C:\ws\a')
-    assert.equal(summary.restored, false, 'v1 is not restorable — recomputed from the preview')
+    await assert.rejects(runtime.install(agent, 'sess-legacy', 'C:\ws\a'), error => error.code === 'E_SNAPSHOT_UNAVAILABLE')
+    assert.equal(agent.registered.length, 0)
+    assert.equal(supervisor.calls.length, 0, 'no generation from current config is started')
     const { file } = await readSessionFile(path)
-    assert.ok(isRestorableSnapshot(file.snapshot), 'file upgraded to a restorable v2 snapshot')
+    assert.equal(file.snapshot.revision, 'deadbeef', 'the historical snapshot remains untouched')
+    assert.equal(isRestorableSnapshot(file.snapshot), false)
     agent.dispose()
     await runtime.settleReleases()
   } finally {

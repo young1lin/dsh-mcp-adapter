@@ -20,7 +20,7 @@ npm run typecheck      # tsc --noEmit，提交前必过
 npm run build          # tsc + esbuild 打 client.js
 npm run build:client   # 只重打浏览器半区
 
-npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，161 个
+npm test               # node --test "test/*.test.mjs" —— 宿主/客户端/配置层，181 个
 npm run test:engine    # vitest run --config vitest.engine.config.ts —— 引擎，279 个
 ```
 

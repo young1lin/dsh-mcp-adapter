@@ -48,6 +48,38 @@ async function handle(handler, req, res) {
   return { status: res.status, json: JSON.parse(res.body) }
 }
 
+test('bridge: future config uses frozen workspace, excludes old overrides and never mutates registration', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-future-'))
+  const other = mkdtempSync(join(tmpdir(), 'mcp-other-pane-'))
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); rmSync(other, { recursive: true, force: true }) })
+  const globalFile = join(dir, 'global.json')
+  writeFileSync(globalFile, JSON.stringify({ mcpServers: { global: { url: 'https://global.invalid/mcp' } } }))
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { originalProject: { url: 'https://project.invalid/mcp' } } }))
+  writeFileSync(join(other, '.mcp.json'), JSON.stringify({ mcpServers: { wrongActivePane: { url: 'https://other.invalid/mcp' } } }))
+  const svc = createConfigService({ storageDir: dir, globalFile, workspaceResolver: { resolve: id => id === 'original-ws' ? { root: dir } : id === 'other-ws' ? { root: other } : undefined } })
+  const { writeSessionFile, sessionFilePath, readSessionFile } = await import('../dist/config/session-store.js')
+  const path = sessionFilePath(dir, 'existing')
+  await writeSessionFile(path, { schemaVersion: 1, overrides: { originalProject: { disabled: true }, oldSessionOnly: { def: { type: 'echo' } } }, snapshot: { version: 2, workspaceId: 'original-ws', registeredAt: 'at', configRevision: 'r', servers: ['global', 'originalProject'].map(name => ({ logical: name, instance: 'frozen-' + name, def: { type: 'http', url: name === 'global' ? 'https://global.invalid/mcp' : 'https://project.invalid/mcp' }, tools: [{ name: 'query' }] })) } })
+  const bytes = readFileSync(path)
+  let registered
+  let engineAccess = 0
+  const web = { register: route => { registered = route; return () => {} } }
+  mountBridge(web, { config: svc, storageDir: dir, engine: () => { engineAccess++; throw new Error('read paths must not touch engine') } })
+  const H = url => handle(registered.handler, fakeReq('GET', '/dsh-mcp-manager' + url), fakeRes())
+  const future = await H('/preview?ss=existing&ws=other-ws&next=1')
+  assert.equal(future.status, 200)
+  assert.equal(future.json.forNextSession, true)
+  assert.deepEqual(future.json.entries.map(entry => entry.name).sort(), ['global', 'originalProject'])
+  assert.ok(future.json.entries.every(entry => !entry.disabled))
+  assert.equal(future.json.layers.some(layer => layer.source === 'session'), false)
+  const view = await H('/session?ss=existing&ws=other-ws')
+  assert.equal(view.json.capabilities.nextSessionPreview, true)
+  assert.deepEqual(view.json.configurationChanges, { added: 0, removed: 0, changed: 0 }, 'old overrides are not a next-session drift')
+  assert.deepEqual(readFileSync(path), bytes)
+  assert.ok((await readSessionFile(path)).file.overrides.oldSessionOnly, 'old session records retained without promising carry-over')
+  assert.equal(engineAccess, 0)
+})
+
 test('trust fence: rebinding Host, cross-origin, cross-site are refused', () => {
   assert.equal(refusalFor(fakeReq('GET', '/x', { host: 'evil.test' }), {}), 'Host must name this machine')
   assert.equal(refusalFor(fakeReq('GET', '/x', { host: 'localhost', remote: '10.0.0.5' }), {}), 'loopback Host from a non-loopback peer')
@@ -140,7 +172,11 @@ test('bridge: MCP management routes answer while Advanced-only routes are absent
   })
   const s2 = await H('GET', '/session?ss=sess2')
   assert.equal(s2.status, 200)
-  assert.deepEqual(s2.json.snapshot, { revision: 'CR', registeredAt: 'R', tools: [publicNameLite('logical', 'toolA')] })
+  assert.deepEqual(s2.json.snapshot, { revision: 'CR', registeredAt: 'R', restorable: true, tools: [publicNameLite('logical', 'toolA')], servers: [{ name: 'logical', transport: 'other', tools: [{ name: 'toolA', publicName: publicNameLite('logical', 'toolA') }] }] })
+  assert.deepEqual(s2.json.configurationChanges, { added: 1, removed: 1, changed: 0 })
+  const future = await H('GET', '/preview?ss=sess2&next=1')
+  assert.equal(future.json.forNextSession, true)
+  assert.equal(future.json.layers.some(layer => layer.source === 'session'), false)
   assert.equal(s2.json.revision.length, 16)
   const sBad = await H('GET', '/session')
   assert.equal(sBad.status, 400)

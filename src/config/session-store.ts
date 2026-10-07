@@ -109,6 +109,7 @@ function coerceTool(raw: unknown): SnapshotTool | undefined {
   if (typeof name !== 'string' || name.length === 0) return undefined
   const out: SnapshotTool = { name }
   const description = (raw as Record<string, unknown>).description
+  if (description !== undefined && typeof description !== 'string') return undefined
   if (typeof description === 'string') out.description = description
   if ('inputSchema' in (raw as Record<string, unknown>)) out.inputSchema = (raw as Record<string, unknown>).inputSchema
   return out
@@ -117,19 +118,20 @@ function coerceTool(raw: unknown): SnapshotTool | undefined {
 function coerceSnapshot(raw: unknown): SessionSnapshot | LegacySessionSnapshot | undefined {
   if (raw === null || typeof raw !== 'object') return undefined
   const record = raw as Record<string, unknown>
-  if (record.version === 2 && Array.isArray(record.servers)) {
+  if (record.version === 2) {
+    if (!Array.isArray(record.servers)) return undefined
     const servers: SessionSnapshotServer[] = []
     for (const serverRaw of record.servers) {
-      if (serverRaw === null || typeof serverRaw !== 'object') continue
+      if (serverRaw === null || typeof serverRaw !== 'object' || Array.isArray(serverRaw)) return undefined
       const server = serverRaw as Record<string, unknown>
       const logical = server.logical
       const instance = server.instance
       const def = server.def
-      if (typeof logical !== 'string' || typeof instance !== 'string' || def === null || typeof def !== 'object') continue
-      const tools = Array.isArray(server.tools)
-        ? server.tools.map(coerceTool).filter((t): t is SnapshotTool => t !== undefined)
-        : []
-      servers.push({ logical, instance, def: def as McpDefinition, tools })
+      if (typeof logical !== 'string' || logical.length === 0 || typeof instance !== 'string' || instance.length === 0 || def === null || typeof def !== 'object' || Array.isArray(def) || !Array.isArray(server.tools)) return undefined
+      const tools = server.tools.map(coerceTool)
+      // Dropping a malformed descriptor would silently change the catalog.
+      if (tools.some(tool => tool === undefined)) return undefined
+      servers.push({ logical, instance, def: def as McpDefinition, tools: tools as SnapshotTool[] })
     }
     return {
       version: 2,
@@ -162,7 +164,9 @@ function coerce(raw: unknown): SessionFile | undefined {
     if (entry.def !== null && typeof entry.def === 'object') overrides[name] = { def: entry.def as McpDefinition }
     else if (entry.disabled === true) overrides[name] = { disabled: true }
   }
-  const snapshot = coerceSnapshot((raw as Record<string, unknown>).snapshot)
+  const snapshotRaw = (raw as Record<string, unknown>).snapshot
+  const snapshot = coerceSnapshot(snapshotRaw)
+  if (snapshotRaw !== undefined && snapshot === undefined) return undefined
   return { schemaVersion: SESSION_SCHEMA_VERSION, overrides, ...(snapshot !== undefined ? { snapshot } : {}) }
 }
 
@@ -219,9 +223,9 @@ function withPathLock<T>(path: string, run: () => Promise<T>): Promise<T> {
  * Write the registration snapshot ONCE (R3 immutability): when a restorable
  * v2 snapshot already exists it is returned untouched and nothing is written —
  * a re-installed (restored/forked/restarted) session keeps the generation it
- * was born with. A LEGACY v1 snapshot (tool names only, never restorable) is
- * upgraded in place by the recomputing install. The overrides ride along
- * unchanged either way.
+ * was born with. Legacy records remain immutable too: missing frozen schemas
+ * are not permission to replace an existing conversation with current config.
+ * The overrides ride along unchanged either way.
  */
 export async function writeSnapshotImmutable(
   path: string,
@@ -233,7 +237,7 @@ export async function writeSnapshotImmutable(
       // Undecryptable/corrupt file: writing would destroy data. Refuse.
       return { wrote: false, current: undefined }
     }
-    if (isRestorableSnapshot(file.snapshot)) return { wrote: false, current: file.snapshot }
+    if (file.snapshot !== undefined) return { wrote: false, current: file.snapshot }
     await writeSessionFile(path, { schemaVersion: file.schemaVersion, overrides: file.overrides, snapshot })
     return { wrote: true, current: snapshot }
   })

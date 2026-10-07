@@ -1,6 +1,6 @@
 {
   "name": "@young1lin/dsh-mcp-adapter",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "DeepSeek Harness plugin unifying MCP servers (mounts standard .mcp.json plus an embedded managed engine).",
   "main": "dist/index.js",
@@ -34,6 +34,7 @@
     "dist",
     "README.md",
     "README.zh-CN.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {

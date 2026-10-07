@@ -75,13 +75,11 @@ export interface PreviewLayer {
 }
 
 /** Registration snapshot recorded when this session's tools were installed. */
-export interface SessionSnapshot {
-  revision: string
-  registeredAt: string
-  tools: string[]
-}
+export type SessionSnapshot = import('../shared/session-view.js').SessionSnapshotView
 
 export interface Preview {
+  /** Host verified that old-session overrides were excluded. */
+  forNextSession?: boolean
   layers: PreviewLayer[]
   entries: PreviewEntry[]
   conflicts: Array<{ scope: string; name: string; standardPath: string; nativeLabel: string }>
@@ -92,6 +90,9 @@ export interface SessionView {
   sessionId: string
   revision: string
   snapshot?: SessionSnapshot
+  snapshotProblem?: 'unreadable'
+  capabilities?: { nextSessionPreview: boolean }
+  configurationChanges?: import('../shared/session-view.js').SessionConfigurationChanges
 }
 
 /** Save addressing for one entry (R5): layerId when known, level+source fallback. */
@@ -263,6 +264,7 @@ export interface ImportResult {
 export const api = {
   // --- configuration plane ---------------------------------------------------------------------
   preview: (scope?: ScopeIds) => call('GET', '/preview', undefined, scopeQuery(scope)) as Promise<Preview>,
+  nextSessionPreview: (ss: string) => call('GET', '/preview', undefined, { ss, next: '1' }) as Promise<Preview>,
   workspaces: () => call('GET', '/workspaces') as Promise<{ items: WorkspaceItem[] }>,
   sessionView: (ss: string) => call('GET', '/session', undefined, { ss }) as Promise<SessionView>,
   saveEntry: (body: SaveEntryBody, scope?: ScopeIds) => call('POST', '/entry', body, scopeQuery(scope)) as Promise<{ revision: string }>,

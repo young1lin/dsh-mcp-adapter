@@ -104,7 +104,8 @@ export function mountAgentPlane(ctx: Context, options: AgentEntryConfig = {}): b
   ctx.effect(() => () => { mounted = false }, 'mcp-agent.mount-guard')
   const timeoutMs = options.toolCallTimeoutMs ?? 180000
   /** sessionId -> the registration promise barrier pre-step awaits. */
-  const ready = new Map<string, Promise<void>>()
+  const ready = new Map<string, { ctx: ScopedContext; promise: Promise<void> }>()
+  const contextReady = new WeakMap<ScopedContext, Promise<void>>()
 
   /**
    * Process-singleton runtime, resolved lazily (the engine may be published
@@ -154,8 +155,8 @@ export function mountAgentPlane(ctx: Context, options: AgentEntryConfig = {}): b
     const agentCtx = agent?.ctx
     const cwd = agent?.session?.header?.cwd
     if (sessionId === undefined || agentCtx === undefined || cwd === undefined || cwd.length === 0) return
-    if (ready.has(sessionId)) return
-    ready.set(sessionId, (async () => {
+    if (contextReady.has(agentCtx)) return // A -> B -> duplicate A must not install A twice.
+    const promise = (async () => {
       await prewarmGate
       const rt = await runtimeOf()
       if (rt === undefined) return
@@ -174,7 +175,13 @@ export function mountAgentPlane(ctx: Context, options: AgentEntryConfig = {}): b
       const stack = error instanceof Error && error.stack !== undefined ? '\n' + error.stack : ''
       const code = (error as { code?: unknown }).code
       ctx.logger.error('mcp-agent: session ' + sessionId + ' tool registration failed [' + String(code) + ']: ' + String(error instanceof Error ? error.message : error) + stack)
-    }))
+    })
+    const registration = { ctx: agentCtx, promise }
+    ready.set(sessionId, registration)
+    contextReady.set(agentCtx, promise)
+    agentCtx.effect(() => () => {
+      if (ready.get(sessionId) === registration) ready.delete(sessionId)
+    }, 'mcp-agent.setup-barrier')
   }), 'mcp-agent.agent-created')
 
   ctx.effect(() => ctx.on('agent/pre-step', async (payload, next: WaterfallNext<unknown>) => {
@@ -186,7 +193,8 @@ export function mountAgentPlane(ctx: Context, options: AgentEntryConfig = {}): b
     const id = payload && typeof payload === 'object'
       ? (payload as { agent?: { id?: string } }).agent?.id ?? (payload as { sessionId?: string }).sessionId
       : undefined
-    const pending = id !== undefined ? ready.get(id) : undefined
+    const agentCtx = payload && typeof payload === 'object' ? (payload as { agent?: { ctx?: ScopedContext } }).agent?.ctx : undefined
+    const pending = agentCtx !== undefined ? contextReady.get(agentCtx) : id !== undefined ? ready.get(id)?.promise : undefined
     if (pending !== undefined) await pending
     return await next()
   }), 'mcp-agent.pre-step')

@@ -25,6 +25,48 @@
 
 export const css = `
 .mmc-root{--mmc-fg:var(--dsw-alias-label-primary,#1d1d1f);--mmc-fg2:var(--dsw-alias-label-secondary,#6e6e73);--mmc-fg3:var(--dsw-alias-label-tertiary,#8e8e93);--mmc-line:var(--dsw-alias-border-l2,rgba(0,0,0,.1));--mmc-hair:var(--dsw-alias-border-l1,rgba(0,0,0,.07));--mmc-bg:var(--dsw-alias-bg-layer-1,#fff);--mmc-fill:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.04));--mmc-brand:var(--dsw-alias-brand-primary,#1d1d1f);--mmc-on-brand:var(--dsw-alias-label-primary-inverted,#fff);--mmc-danger:var(--dsw-alias-state-error-primary,#d70015);--mmc-ok:var(--dsw-alias-state-success-primary,#30a46c);--mmc-r:12px;--mmc-inset:34px;color:var(--mmc-fg);font-family:var(--ds-font-family,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif);font-size:13px;line-height:1.45;letter-spacing:-.01em;display:flex;flex-direction:column;gap:18px;max-width:720px;min-width:0}
+/* Session view owns neither the host scrollport nor the floating composer.
+   As in dsh-request-log: the chat-width strips overlay/steal hits on plugin
+   content which does not use --dsh-chat-content-width. Hide ONLY these strips
+   while this view is mounted; outer pane splitters and Chat remain untouched. */
+[data-conversation-scroll]:has(.mmc-session) ~ [data-width-handle]{display:none}
+.mmc-root.mmc-session{box-sizing:border-box;width:100%;max-width:800px;margin-inline:auto;padding:20px 24px 32px;gap:16px;container-type:inline-size}
+.mmc-session *,.mmc-session *::before,.mmc-session *::after{box-sizing:border-box;min-width:0}
+.mmc-session-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.mmc-session-head h3{margin:0 0 4px;font-size:14px;font-weight:600}
+.mmc-session-navigation{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.mmc-session-navigation .mmc-tabs{margin:0;flex-wrap:wrap}
+.mmc-session-change{border:0;border-radius:6px;padding:4px 8px;background:var(--mmc-fill);color:var(--mmc-fg2);font:inherit;font-size:11px;cursor:pointer}
+.mmc-session-services{border:1px solid var(--mmc-line);border-radius:var(--dsw-radius-md,12px);overflow:hidden;background:var(--mmc-bg)}
+.mmc-session-service+.mmc-session-service,.mmc-session-config-row+.mmc-session-config-row{border-top:1px solid var(--mmc-hair)}
+.mmc-session-summary{display:flex;align-items:center;gap:10px;min-height:52px;padding:12px 14px;cursor:pointer;list-style:none}
+.mmc-session-summary::-webkit-details-marker{display:none}
+.mmc-session-summary:hover{background:var(--mmc-fill)}
+.mmc-session-summary:focus-visible,.mmc-session-copy:focus-visible,.mmc-session-change:focus-visible{outline:2px solid var(--mmc-brand);outline-offset:-2px}
+.mmc-session-service-icon{flex:none;color:var(--mmc-fg2)}
+.mmc-session-name{flex:1;overflow-wrap:anywhere;font-weight:500}
+.mmc-session-transport{font-size:11px;color:var(--mmc-fg3);flex:none}
+.mmc-session-tool-count{font-size:12px;color:var(--mmc-fg2);flex:none;white-space:nowrap}
+.mmc-session-chevron{flex:none;color:var(--mmc-fg3);transition:transform .12s}
+.mmc-session-service[open]>.mmc-session-summary .mmc-session-chevron{transform:rotate(90deg)}
+.mmc-session-tools{border-top:1px solid var(--mmc-hair);padding:4px 14px 8px 44px}
+.mmc-session-tool{display:flex;align-items:flex-start;gap:12px;padding:10px 0}
+.mmc-session-tool+.mmc-session-tool{border-top:1px solid var(--mmc-hair)}
+.mmc-session-tool-text{flex:1}
+.mmc-session-tool code{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-size:12px;overflow-wrap:anywhere}
+.mmc-session-tool p{font-size:12px;color:var(--mmc-fg2);margin:5px 0 0;overflow-wrap:anywhere}
+.mmc-session-copy{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;border:0;border-radius:6px;background:transparent;color:var(--mmc-fg3);cursor:pointer}
+.mmc-session-copy:hover{background:var(--mmc-fill);color:var(--mmc-fg)}
+.mmc-session-registered,.mmc-session-configuration{display:flex;flex-direction:column;gap:12px}
+.mmc-session-notice{padding:10px 12px;border-radius:8px;background:var(--mmc-fill);color:var(--mmc-fg2);font-size:12px;overflow-wrap:anywhere}
+.mmc-session-notice.error{color:var(--mmc-danger)}
+.mmc-session-config-row{display:flex;align-items:center;gap:12px;padding:12px 14px;flex-wrap:wrap}
+.mmc-session-config-source{font-size:11px;color:var(--mmc-fg3)}
+.mmc-session-info{font-size:11px;color:var(--mmc-fg3)}
+.mmc-session-info>summary{cursor:pointer;list-style:none}
+.mmc-session-info>div{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px;margin-top:10px}
+.mmc-session-info code,.mmc-session-info time{font:inherit;overflow-wrap:anywhere}
+@container(max-width:400px){.mmc-session-tools{padding-left:14px}.mmc-session-summary{gap:8px}.mmc-session-transport{display:none}.mmc-session-config-source{flex-basis:100%}}
 .mmc-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
 .mmc-sub{color:var(--mmc-fg2);font-size:12px;min-width:0}
 .mmc-head>.mmc-sub{flex:1 1 200px}

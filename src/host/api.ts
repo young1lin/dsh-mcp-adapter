@@ -194,7 +194,17 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
   // --- configuration plane ---
   if (method === 'GET' && path === '/workspaces') return { items: deps.workspaces?.() ?? [] }
   if (method === 'GET' && path === '/preview') {
-    return deps.config.preview({ ...(ws !== undefined ? { workspaceId: ws } : {}), ...(ss !== undefined ? { sessionId: ss } : {}) })
+    const forNext = req.query.get('next') === '1'
+    let workspaceId = ws
+    if (forNext && ss !== undefined) {
+      const { readSessionFile, sessionFilePath, isRestorableSnapshot } = await import('../config/session-store.js')
+      const { file } = await readSessionFile(sessionFilePath(deps.storageDir, ss))
+      if (!isRestorableSnapshot(file.snapshot)) throw Object.assign(new Error('Cannot verify new-session configuration without a valid registration snapshot'), { code: 'SCOPE' })
+      // Match create({cwd}) for THIS conversation, not another active pane.
+      workspaceId = file.snapshot.workspaceId
+    }
+    const preview = await deps.config.preview({ ...(workspaceId !== undefined ? { workspaceId } : {}), ...(!forNext && ss !== undefined ? { sessionId: ss } : {}) })
+    return forNext ? { ...preview, forNextSession: true } : preview
   }
   if (method === 'POST' && (path === '/entry' || path === '/enabled')) {
     const base = { ...(ws !== undefined ? { workspaceId: ws } : {}), ...(ss !== undefined ? { sessionId: ss } : {}) }
@@ -361,21 +371,25 @@ async function route(req: Wire, path: string, deps: BridgeDeps): Promise<unknown
   if (method === 'GET' && path === '/session') {
     if (ss === undefined) throw Object.assign(new Error('ss is required'), { code: 'SCOPE' })
     const { readSessionFile, sessionFilePath, revisionOfSession, isRestorableSnapshot } = await import('../config/session-store.js')
-    const { publicNameLite } = await import('../runtime/session-runtime.js')
-    const { file } = await readSessionFile(sessionFilePath(deps.storageDir, ss))
+    const { snapshotView, configurationChanges } = await import('./session-view.js')
+    const { file, problem } = await readSessionFile(sessionFilePath(deps.storageDir, ss))
     const snap = file.snapshot
-    let snapshot: { revision: string; registeredAt: string; tools: string[] } | undefined
+    let snapshot: import('../shared/session-view.js').SessionSnapshotView | undefined
+    let changes: import('../shared/session-view.js').SessionConfigurationChanges | undefined
     if (isRestorableSnapshot(snap)) {
-      snapshot = {
-        revision: snap.configRevision,
-        registeredAt: snap.registeredAt,
-        tools: snap.servers.flatMap((server) => server.tools.map((tool) => publicNameLite(server.logical, tool.name))),
+      snapshot = snapshotView(snap)
+      try {
+        const next = await deps.config.preview({ workspaceId: snap.workspaceId, maskSecrets: false })
+        changes = configurationChanges(snap, next)
+      } catch {
+        // A broken latest config must not hide the registered catalog or
+        // replace it with an empty/current preview. Config tab reports errors.
       }
     } else if (snap !== undefined && Array.isArray((snap as { tools?: unknown }).tools)) {
       const legacy = snap as { revision?: string; registeredAt?: string; tools: string[] }
-      snapshot = { revision: legacy.revision ?? '', registeredAt: legacy.registeredAt ?? '', tools: legacy.tools }
+      snapshot = { revision: legacy.revision ?? '', registeredAt: legacy.registeredAt ?? '', tools: legacy.tools, restorable: false }
     }
-    return { sessionId: ss, revision: revisionOfSession(file), ...(snapshot !== undefined ? { snapshot } : {}) }
+    return { sessionId: ss, revision: revisionOfSession(file), capabilities: { nextSessionPreview: true }, ...(problem !== undefined ? { snapshotProblem: 'unreadable' } : {}), ...(snapshot !== undefined ? { snapshot } : {}), ...(changes !== undefined ? { configurationChanges: changes } : {}) }
   }
 
   // --- engine plane ---

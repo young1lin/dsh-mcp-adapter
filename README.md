@@ -56,10 +56,16 @@ Merge by MCP name, replacing whole entries rather than stitching fields; `disabl
 
 An explicit non-default `globalFile` still pins one global standard file instead of loading the default pair, preventing unexpected home-directory tools.
 
+Release changes: [CHANGELOG](CHANGELOG.md).
+
 ## Scope & timing semantics
 
 - Global/project saves apply to the NEXT session; running sessions keep their registered tool set (snapshot).
-- Session-level changes are flagged *pending* until a later session adopts them.
+- The conversation MCP tab defaults to its frozen catalog, grouped by MCP with expandable tools. Registration is not a realtime online/health indicator. Refresh is read-only and cannot register, execute, or replace tools.
+- **New-session config** is an opt-in global/project preview for this conversation's recorded workspace. Old-session overrides are NOT automatically copied by creating a new conversation. Their storage/API remain available, but the conversation view does not offer misleading hot-edit controls.
+- Valid v2 snapshots replay their frozen tool names/descriptions/schemas and raw definitions even after configuration changes. If a frozen server cannot return, the same descriptors remain with a local unavailable error. Legacy, unreadable or malformed generations fail closed instead of substituting current config. Environment references in raw templates may re-resolve when the engine restarts; this is not a promise to pin concrete resolved credentials/endpoints.
+- The page centers within the actual pane and reflows as it resizes. The latest DSH chat-width hit strips are hidden only while this MCP view is mounted, not the outer pane splitter or Chat handles.
+- Restart DSH, then refresh the page after rebuilding the plugin. A still-running old backend keeps its snapshot view usable and hides the unverified future-config entry; it does not require a DSH version upgrade.
 - Standard files stay plain, standard-shaped JSON — the panel and your editor share one source of truth (revision-checked, atomic writes).
 
 ## Uninstall / rollback
