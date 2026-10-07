@@ -26,6 +26,12 @@ env/
 *.token
 sealed.json
 
+# 引擎本地账本与打包制品（承载令牌状态，一律不进库）
+gateway.config.json
+managed.json
+listener.json
+*.tgz
+
 # 编辑器 / IDE
 .idea/
 .vscode/
